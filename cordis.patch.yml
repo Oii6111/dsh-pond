@@ -1,0 +1,24 @@
+# ============================================================================
+# dsh-pond —— DSH bundle patch（插件**自带**的挂载声明）
+# ============================================================================
+# 这就是"标准 DSH 插件"的样子：包自己声明要往 profile 的配置树里插什么。
+# 装上之后，profile 只要在 `dsh.profile.bundles` 里列出本包名即生效，
+# 不用再手改 profile 自己的 cordis.patch.yml：
+#
+#   dsh plugin --profile web add dsh-pond              （npm 上发出来之后）
+#   dsh plugin --profile web add link:<本仓库目录>      （本地开发 —— 这台机器现在就是这样）
+#
+# 组成顺序：每个 bundle 的 patch 按 `dsh.profile.bundles` 顺序叠
+#          → 再叠 profile 自己那一层的 cordis.patch.yml（只有那层是热重载）
+#
+# ⚠️ 条目 id `bili-scroll` 故意保持没改：设置页槽位、状态目录（$DSH_HOME/bili-duty）、
+#    HTTP 路由（/api/bili-duty/*）都按它走，改了会把用户已有的登录与配置丢掉。
+#    换掉的只有**包名**（dsh-pond）—— DSH 用包名解析模块，用 id 认配置层。
+# ============================================================================
+
+- insert:
+    - id: bili-scroll
+      name: dsh-pond
+      config:
+        # 真正的用户配置在插件自己的 config 里（设置页可改），这里只放默认值
+        enabled: true
