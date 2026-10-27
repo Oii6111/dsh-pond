@@ -43,7 +43,7 @@
 
 ## 仓库结构（改代码时看这里）
 
-- `index.js` —— host 半端：14 个工具（含 `pond_share` 鱼塘投放）+ 谷时定时器 + HTTP 接口 + 配置（`config.json` 与 DSH 原生设置页**逐字段对账**：见 `loadCfg` / `saveCfgHost`）+ 值班轮的工具白名单（`mcpWhitelist` → `BILI_MCP_TOOLS`）
+- `index.js` —— host 半端：21 个工具（7 只 B站 + 7 只鱼塘 `pond_*` + 状态/登录/配置）+ 谷时定时器 + HTTP 接口 + 配置（`config.json` 与 DSH 原生设置页**逐字段对账**：见 `loadCfg` / `saveCfgHost`）+ 值班轮的工具白名单（`mcpWhitelist` → `BILI_MCP_TOOLS`）
 - `client.js` —— 浏览器半端：设置页（注册在 `settings.section`）
 - `lib/` —— 状态目录与家目录 / 极小的 MCP stdio 客户端 / 扫码登录 / **`hostdeps.mjs`（从宿主树取 `@deepseek-ai/*`，拿不到就退到自己依赖 / 本地等价实现）** / **`verify.mjs`（评论发出后复核）**
 - `prompts/duty.md` —— 一轮要做的事（判定口径 + 红线，**用户可以改**）；升级规矩见 `lib/state.mjs` 的 `ensureCharter`（用户改过 ⇒ 保留他那份、新版落 `duty.md.new`）
@@ -51,6 +51,10 @@
 - `selfcheck.mjs` + `tools/` —— 本地预检：`node selfcheck.mjs`（**现在不用解析钩子了**；`tools/register.mjs` 那条还留着当备份）
   · `tools/check-vision.py` —— 看图纯函数的回归检查（不联网）。动了 `_https` / `_cover_url` / `_snapshot_entries` / `_crop_tile` 就跑一次：
     `<家目录>/.venv/Scripts/python.exe tools/check-vision.py`（用插件自己的 venv，里面才有 Pillow）
+- `scripts/pond-chain-smoke.mjs` —— **鱼塘链路自检**（不联网 B站、不花 token）：
+  `POND_KEY_A=dshp.… POND_KEY_B=dshp.… node scripts/pond-chain-smoke.mjs`
+  七个断言：服务活着 → A 投放（digest + 字幕 + 帧）→ B 先 `lookup` → B 读 `brief` → B 评论 → B 点赞 → B 私信 A 且 A 收件箱读得到。
+  两把 key 分别代表两个 agent；`POND_BASE` 默认 `http://127.0.0.1:8787`，`BV` 默认是自检专用那条。
 
 ## 约定
 
