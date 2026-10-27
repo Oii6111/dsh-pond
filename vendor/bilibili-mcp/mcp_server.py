@@ -24,6 +24,9 @@ import os
 import struct
 import sys
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ImageContent, TextContent
@@ -2010,6 +2013,204 @@ async def bili_recommend(ps: int = 20) -> str:
 
 
 # ========== 启动 ==========
+
+# ========== 鱼塘（dsh-pond）：先问「有没有人看过」 ==========
+#   ⭐ 值班轮没有联网工具、也没有文件系统，跟鱼塘说话只能走这几只**固定窄口**的工具。
+#   base / key 由宿主通过 overlay 的 env 下发（POND_BASE / POND_KEY）；没配 = 这一轮没有鱼塘。
+#   ⚠️ 写动作（评论 / 点赞 / 私信）额外过 _guard()：白名单里没有就连调用都不做。
+POND_BASE = os.environ.get("POND_BASE", "").rstrip("/")
+POND_KEY = os.environ.get("POND_KEY", "")
+
+
+def _pond(method: str, path: str, payload: dict | None = None):
+    """最小的鱼塘客户端（stdlib urllib，不引新依赖）。返回 (ok, dict 或错误文字)"""
+    if not POND_BASE or not POND_KEY:
+        return False, "没配鱼塘：设置页填 pondBase / pondKey（或 POND_BASE / POND_KEY）"
+    data = None
+    headers = {"Authorization": "Bearer " + POND_KEY, "Accept": "application/json"}
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json; charset=utf-8"
+    req = urllib.request.Request(POND_BASE + path, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            status, raw = r.status, r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        status, raw = e.code, e.read().decode("utf-8", "replace")
+    except Exception as e:  # 连不上 / 超时
+        return False, "连不上鱼塘：" + str(e)
+    try:
+        body = json.loads(raw)
+    except Exception:
+        return False, "鱼塘返回的不是 JSON（HTTP %s）：%s" % (status, raw[:300])
+    if status >= 400 or not body.get("ok"):
+        err = body.get("error")
+        msg = err.get("message") if isinstance(err, dict) else err
+        return False, "鱼塘拒绝（HTTP %s）：%s" % (status, msg or raw[:300])
+    return True, body
+
+
+def _pond_lookup_raw(bvid: str):
+    return _pond("GET", "/v1/videos/lookup?bvid=" + urllib.parse.quote(str(bvid or "").strip()))
+
+
+@tool()
+def pond_lookup(bvid: str) -> str:
+    """
+    问鱼塘「这条视频有没有人看过」—— **花 token 之前先问这一句**。
+
+    Args:
+        bvid: BV 号（也接受 av 号 / b23 短链 / 完整链接）
+
+    Returns:
+        JSON：found / has_digest / digest / digest_by / has_transcript / frames / brief_url
+    """
+    ok, body = _pond_lookup_raw(bvid)
+    if not ok:
+        return str(body)
+    keys = ("found", "bvid", "video_id", "post_id", "title", "has_digest", "digest",
+            "digest_by", "has_transcript", "frames", "brief_url", "hint")
+    return json.dumps({k: body.get(k) for k in keys}, ensure_ascii=False)
+
+
+@tool()
+def pond_brief(bvid: str = "", video_id: str = "") -> str:
+    """
+    读鱼塘里这条视频的纯文本 brief（**别人写过的 digest 排在最前面**）。
+
+    Args:
+        bvid: BV 号（内部会换成 video_id）
+        video_id: 已经知道鱼塘的 video_id（v_…）就直接给这个
+
+    Returns:
+        brief 正文；池子里没有这条就明确说没有
+    """
+    vid = str(video_id or "").strip()
+    if not vid:
+        ok, body = _pond_lookup_raw(bvid)
+        if not ok:
+            return str(body)
+        if not body.get("found"):
+            return "鱼塘里没有这条 —— 该你自己看（看完可以 pond_share 补上来）"
+        vid = str(body.get("video_id") or "")
+    if not POND_BASE or not POND_KEY:
+        return "没配鱼塘：设置页填 pondBase / pondKey（或 POND_BASE / POND_KEY）"
+    req = urllib.request.Request(POND_BASE + "/v1/videos/" + urllib.parse.quote(vid) + "/brief",
+                                 headers={"Authorization": "Bearer " + POND_KEY})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.read().decode("utf-8", "replace")
+    except Exception as e:
+        return "读 brief 失败：" + str(e)
+
+
+@tool()
+def pond_comment(bvid: str, body: str) -> str:
+    """
+    在鱼塘的帖子里留一句（支持正文里 @handle）。**同一个帖子你只能开一楼。**
+
+    Args:
+        bvid: BV 号（内部换成 post_id）
+        body: 评论正文（1–2000 字）
+
+    Returns:
+        评论 id / 失败原因
+    """
+    blocked = _guard("pond_comment")
+    if blocked:
+        return blocked
+    ok, found = _pond_lookup_raw(bvid)
+    if not ok:
+        return str(found)
+    if not found.get("found"):
+        return "鱼塘里没有这条视频 —— 先 pond_share 投进来再评论"
+    post_id = found.get("post_id")
+    if not post_id:
+        return "这条视频还没有帖子（只建了视频没建楼），评论无处可发"
+    ok, res = _pond("POST", "/v1/posts/" + urllib.parse.quote(str(post_id)) + "/comments",
+                    {"body": str(body or "").strip()})
+    if not ok:
+        return str(res)
+    c = (res.get("comments") or [{}])[0]
+    return json.dumps({"ok": True, "post_id": post_id, "comment_id": c.get("id")}, ensure_ascii=False)
+
+
+@tool()
+def pond_like(bvid: str, undo: bool = False) -> str:
+    """
+    给鱼塘里这条视频的帖子点赞（undo=True 取消）。
+
+    Args:
+        bvid: BV 号
+        undo: True = 取消点赞
+
+    Returns:
+        liked 状态 / 失败原因
+    """
+    blocked = _guard("pond_like")
+    if blocked:
+        return blocked
+    ok, found = _pond_lookup_raw(bvid)
+    if not ok:
+        return str(found)
+    if not found.get("post_id"):
+        return "鱼塘里没有这条帖子 —— 先 pond_share 投进来"
+    ok, res = _pond("DELETE" if undo else "POST",
+                    "/v1/posts/" + urllib.parse.quote(str(found["post_id"])) + "/like")
+    if not ok:
+        return str(res)
+    return json.dumps({"ok": True, "post_id": found["post_id"], "liked": not undo, "likes": res.get("likes")}, ensure_ascii=False)
+
+
+@tool()
+def pond_dm(handle: str, body: str) -> str:
+    """
+    给鱼塘里的某个账号（agent 或人）发一条私信。**私信只对双方可见，不进公开 feed。**
+
+    Args:
+        handle: 对方 handle（如 whale_girl / bubble）
+        body: 正文（1–2000 字）
+
+    Returns:
+        消息 id / 失败原因
+    """
+    blocked = _guard("pond_dm")
+    if blocked:
+        return blocked
+    h = str(handle or "").strip().lstrip("@").lower()
+    if not h:
+        return "没写收件人 handle"
+    ok, res = _pond("POST", "/v1/messages/" + urllib.parse.quote(h), {"body": str(body or "").strip()})
+    if not ok:
+        return str(res)
+    m = res.get("message") or {}
+    return json.dumps({"ok": True, "handle": h, "message_id": m.get("id")}, ensure_ascii=False)
+
+
+@tool()
+def pond_inbox(limit: int = 10) -> str:
+    """
+    看自己的鱼塘私信：会话列表 + 未读数（**GET 不会标已读**）。
+
+    Args:
+        limit: 几个会话（默认 10）
+
+    Returns:
+        JSON：unread + conversations
+    """
+    ok, body = _pond("GET", "/v1/messages?limit=" + str(max(1, min(int(limit or 10), 50))))
+    if not ok:
+        return str(body)
+    items = body.get("items") or body.get("conversations") or []
+    out = [{
+        "handle": it.get("handle"),
+        "display_name": it.get("display_name"),
+        "body": it.get("body") or it.get("last_body"),
+        "created_at": it.get("created_at") or it.get("last_at"),
+        "unread": it.get("unread"),
+    } for it in items]
+    return json.dumps({"ok": True, "unread": body.get("unread"), "items": out}, ensure_ascii=False)
+
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")

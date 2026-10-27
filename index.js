@@ -827,6 +827,265 @@ function reportMeta() {
     },
   })
 
+  /* ─────────────── 鱼塘的其它动作 ───────────────
+   * 同一把 key（pondKey）走服务端 /v1/*，**能不能用由 key 的 scope 决定**（服务端会回 403）：
+   *   read:feed / read:video / read:social    → lookup / brief / feed / inbox
+   *   write:comment                           → comment
+   *   write:social                            → like / dm
+   *   write:publish                           → share（上面那只）
+   * 没配 pondBase/pondKey 时不静默失败，回一句「怎么配」。
+   */
+  const pondReq = async (pathname, { method = 'GET', body, exec } = {}) => {
+    const base = String(cfg.pondBase || '').trim().replace(/\/+$/, '')
+    const key = String(cfg.pondKey || '').trim()
+    if (!base || !key) {
+      return {
+        ok: false,
+        error: '还没配鱼塘（pondBase / pondKey）',
+        hint: 'bili_config {patch:{pondBase:"http://127.0.0.1:8787", pondKey:"dshp.<prefix>.<secret>"}}',
+      }
+    }
+    const headers = { authorization: `Bearer ${key}` }
+    const init = { method, headers, signal: exec?.signal }
+    if (body !== undefined) {
+      headers['content-type'] = 'application/json'
+      init.body = JSON.stringify(body)
+    }
+    let res
+    let text
+    try {
+      res = await fetch(base + pathname, init)
+      text = await res.text()
+    } catch (e) {
+      return { ok: false, error: '连不上鱼塘：' + String(e?.message ?? e), base }
+    }
+    let json = null
+    try { json = JSON.parse(text) } catch { /* 非 JSON，多半是网关错误页 */ }
+    if (!res.ok || !json || json.ok !== true) {
+      return {
+        ok: false,
+        status: res.status,
+        error: json?.error?.message || String(text).slice(0, 300) || '鱼塘返回了空响应',
+        hint: res.status === 403 ? '这把 key 没有做这件事的 scope —— 让池主补发或换一把' : undefined,
+        base,
+      }
+    }
+    return { ok: true, base, data: json }
+  }
+
+  /** 把 bvid 换成 video_id / post_id（评论点赞都要 post_id） */
+  const pondLookup = async (bvid, exec) => {
+    const r = await pondReq('/v1/videos/lookup?bvid=' + encodeURIComponent(bvid), { exec })
+    return r
+  }
+
+  tool({
+    name: 'pond_lookup',
+    description: '问鱼塘一句「这条视频有没有人看过」，**看之前先问**（省 token 的那一跳）。\n'
+      + 'found=true 且 has_digest=true ⇒ 别再自己读字幕/抽帧，直接 pond_brief 拿别人写好的内容。',
+    parameters: {
+      bvid: { type: 'string', description: 'BV号（也接受 av 号 / b23 短链 / 完整链接）' },
+    },
+    async execute(args, exec) {
+      const bvid = String(args.bvid || '').trim()
+      if (!bvid) return { ok: false, error: '缺少 bvid' }
+      const r = await pondLookup(bvid, exec)
+      if (!r.ok) return r
+      const d = r.data
+      return {
+        ok: true,
+        found: Boolean(d.found),
+        bvid: d.bvid,
+        video_id: d.video_id,
+        post_id: d.post_id || null,
+        title: d.title,
+        has_digest: Boolean(d.has_digest),
+        digest: d.digest || null,
+        digest_by: d.digest_by || null,
+        has_transcript: Boolean(d.has_transcript),
+        frames: d.frames ?? 0,
+        brief_url: d.brief_url,
+        hint: d.hint,
+      }
+    },
+  })
+
+  tool({
+    name: 'pond_brief',
+    description: '读鱼塘里这条视频的纯文本 brief（有人写过的 digest 在最前面，然后是字幕/机器摘要）。\n'
+      + '**这条已经有人看过时，用这个代替 bili_subtitle + bili_frames + 自己的判断。**',
+    parameters: {
+      bvid: { type: 'string', description: 'BV号（给这个就行，内部会换成 video_id）' },
+      video_id: { type: 'string', description: '鱼塘的 video_id（v_…）；给了就不再用 bvid 查' },
+    },
+    async execute(args, exec) {
+      let id = String(args.video_id || '').trim()
+      if (!id) {
+        const bvid = String(args.bvid || '').trim()
+        if (!bvid) return { ok: false, error: '要么给 bvid，要么给 video_id' }
+        const r = await pondLookup(bvid, exec)
+        if (!r.ok) return r
+        if (!r.data.found) return { ok: true, found: false, hint: '鱼塘里没有这条 —— 该你自己看' }
+        id = r.data.video_id
+      }
+      const base = String(cfg.pondBase || '').trim().replace(/\/+$/, '')
+      const key = String(cfg.pondKey || '').trim()
+      if (!base || !key) return { ok: false, error: '还没配鱼塘（pondBase / pondKey）' }
+      try {
+        const res = await fetch(`${base}/v1/videos/${encodeURIComponent(id)}/brief`, {
+          headers: { authorization: `Bearer ${key}` },
+          signal: exec?.signal,
+        })
+        const text = await res.text()
+        if (!res.ok) return { ok: false, status: res.status, error: String(text).slice(0, 300) }
+        return { ok: true, video_id: id, brief: text }
+      } catch (e) {
+        return { ok: false, error: '连不上鱼塘：' + String(e?.message ?? e) }
+      }
+    },
+  })
+
+  tool({
+    name: 'pond_feed',
+    description: '刷一遍鱼塘的 feed（别人搬进来的视频 / 讨论）。带 key 时每条会告诉你 liked / commented。',
+    parameters: {
+      sort: { type: 'string', description: 'hot（默认）或 new' },
+      limit: { type: 'number', description: '几条（默认 10，最多 50）' },
+    },
+    async execute(args, exec) {
+      const sort = String(args.sort || 'hot').trim() === 'new' ? 'new' : 'hot'
+      const limit = Math.max(1, Math.min(Number(args.limit) || 10, 50))
+      const r = await pondReq(`/v1/feed?sort=${sort}&limit=${limit}`, { exec })
+      if (!r.ok) return r
+      const d = r.data
+      return {
+        ok: true,
+        sort: d.sort,
+        unread: d.unread,
+        unread_messages: d.unread_messages,
+        next_cursor: d.next_cursor,
+        items: (d.items || []).map((it) => ({
+          post_id: it.id,
+          kind: it.kind,
+          title: it.title,
+          author: it.author?.handle,
+          bvid: it.video?.vid ?? null,
+          video_id: it.video?.id ?? null,
+          has_digest: Boolean(it.video?.has_digest ?? (it.video?.digest_excerpt ? true : false)),
+          digest_excerpt: it.video?.digest_excerpt ?? null,
+          stats: it.stats,
+          my: it.my,
+          created_at: it.created_at,
+        })),
+      }
+    },
+  })
+
+  /** 评论 / 点赞 都要 post_id；给了 bvid 就先查一次 */
+  const resolvePost = async (args, exec) => {
+    let postId = String(args.post_id || '').trim()
+    let videoId = ''
+    if (!postId) {
+      const bvid = String(args.bvid || '').trim()
+      if (!bvid) return { ok: false, error: '要么给 post_id，要么给 bvid' }
+      const r = await pondLookup(bvid, exec)
+      if (!r.ok) return r
+      if (!r.data.found) return { ok: false, error: '鱼塘里没有这条视频 —— 先 pond_share 投进来' }
+      postId = r.data.post_id || ''
+      videoId = r.data.video_id || ''
+      if (!postId) return { ok: false, error: '这条视频还没有帖子（可能只建了视频没建楼）', video_id: videoId }
+    }
+    return { ok: true, post_id: postId, video_id: videoId }
+  }
+
+  tool({
+    name: 'pond_comment',
+    description: '在鱼塘的帖子里留一句（给别的 agent 或人看）。支持正文里 @handle。\n'
+      + '服务端限制：同一个帖子你只能开一楼（再想说就回复自己那楼）—— 需要 write:comment。',
+    parameters: {
+      body: { type: 'string', description: '评论正文（1–2000 字）' },
+      post_id: { type: 'string', description: '鱼塘的 post_id（p_…）' },
+      bvid: { type: 'string', description: '或者给 BV号，内部会换成 post_id' },
+    },
+    async execute(args, exec) {
+      const text = String(args.body || '').trim()
+      if (!text) return { ok: false, error: '缺少 body' }
+      const t = await resolvePost(args, exec)
+      if (!t.ok) return t
+      const r = await pondReq(`/v1/posts/${encodeURIComponent(t.post_id)}/comments`, {
+        method: 'POST', body: { body: text }, exec,
+      })
+      if (!r.ok) return { ...r, post_id: t.post_id }
+      const c = r.data.comment
+      return { ok: true, post_id: t.post_id, comment_id: c?.id ?? null, author: c?.author?.handle ?? null }
+    },
+  })
+
+  tool({
+    name: 'pond_like',
+    description: '给鱼塘的帖子点赞（undo=true 取消）。需要 write:social。',
+    parameters: {
+      post_id: { type: 'string', description: '鱼塘的 post_id（p_…）' },
+      bvid: { type: 'string', description: '或者给 BV号，内部会换成 post_id' },
+      undo: { type: 'boolean', description: 'true = 取消点赞' },
+    },
+    async execute(args, exec) {
+      const t = await resolvePost(args, exec)
+      if (!t.ok) return t
+      const undo = Boolean(args.undo)
+      const r = await pondReq(`/v1/posts/${encodeURIComponent(t.post_id)}/like`, {
+        method: undo ? 'DELETE' : 'POST', exec,
+      })
+      if (!r.ok) return { ...r, post_id: t.post_id }
+      return { ok: true, post_id: t.post_id, liked: !undo, ...r.data }
+    },
+  })
+
+  tool({
+    name: 'pond_dm',
+    description: '给鱼塘里的某个账号（agent 或人）发一条私信。需要 write:social。\n'
+      + '私信只对双方可见，不进公开 feed；对方不回你也不会自动生成回复（要靠它自己轮询）。',
+    parameters: {
+      handle: { type: 'string', description: '对方的 handle（如 whale_girl / bubble）' },
+      body: { type: 'string', description: '正文（1–2000 字）' },
+    },
+    async execute(args, exec) {
+      const handle = String(args.handle || '').trim().toLowerCase().replace(/^@/, '')
+      const text = String(args.body || '').trim()
+      if (!handle) return { ok: false, error: '缺少 handle' }
+      if (!text) return { ok: false, error: '缺少 body' }
+      const r = await pondReq(`/v1/messages/${encodeURIComponent(handle)}`, { method: 'POST', body: { body: text }, exec })
+      if (!r.ok) return { ...r, handle }
+      const m = r.data.message
+      return { ok: true, handle, message_id: m?.id ?? null, created_at: m?.created_at ?? null }
+    },
+  })
+
+  tool({
+    name: 'pond_inbox',
+    description: '看自己的鱼塘私信：会话列表 + 未读数（GET 不标记已读）。需要 read:social。',
+    parameters: {
+      limit: { type: 'number', description: '几个会话（默认 10）' },
+    },
+    async execute(args, exec) {
+      const limit = Math.max(1, Math.min(Number(args.limit) || 10, 50))
+      const r = await pondReq(`/v1/messages?limit=${limit}`, { exec })
+      if (!r.ok) return r
+      const d = r.data
+      return {
+        ok: true,
+        unread: d.unread,
+        conversations: (d.conversations || d.items || []).map((c) => ({
+          actor_handle: c.handle ?? c.peer?.handle,
+          display_name: c.display_name ?? c.peer?.display_name,
+          last_body: c.last_body ?? c.body ?? c.last?.body,
+          last_at: c.last_at ?? c.created_at ?? c.last?.created_at,
+          unread: c.unread,
+        })),
+      }
+    },
+  })
+
   tool({
     name: 'bili_reply',
     description: '在视频下发评论（或回复某条评论）。这就是"@ 本人"那一下：短、干净、纯文本 @ 写在正文里。\n'
@@ -1424,6 +1683,15 @@ function reportMeta() {
     //   模型手里压根没有这只工具 ⇒ 表现成"开关也开了、这一轮也跑了，但从来没发出去过" ✗
     //   ⇒ dmMode 不是 off、且填了收件人 UID 才放进去（关着就不给，白名单别松）
   if (String(cfg.dmMode || 'off') !== 'off' || cfg.dmWatch) list.push('bili_send_message')   // 2026-10-21：UID 可能靠昵称查，别再拿 dmUid>0 当条件
+    // ⭐⭐ 鱼塘（2026-10-28）：**只读的那几只配了就放**（先问「有没有人看过」是省 token 的关键）；
+    //    写动作跟 B站 那边用同一组「说话开关」——
+    //    评论/点赞跟随 autoComment（dmOnly 时连评论都关，跟 bili_reply 一致），私信跟随 dmMode/dmWatch。
+    const pondReady = Boolean(String(cfg.pondBase || '').trim() && String(cfg.pondKey || '').trim())
+    if (pondReady) {
+      list.push('pond_lookup', 'pond_brief', 'pond_inbox')
+      if (!dmOnly && (cfg.autoComment || cfg.replyToComments)) list.push('pond_comment', 'pond_like')
+      if (String(cfg.dmMode || 'off') !== 'off' || cfg.dmWatch) list.push('pond_dm')
+    }
     return list
   }
 
@@ -1513,6 +1781,11 @@ function reportMeta() {
         '          - ' + yq(posix(script)),
         '        env:',
         '          BILI_MCP_TOOLS: ' + yq(mcpWhitelist().join(',')),
+        // ⭐ 鱼塘的 base/key 也走 env（只给这一轮的子进程，不落到全局环境变量里）
+        ...(String(cfg.pondBase || '').trim() && String(cfg.pondKey || '').trim()
+          ? ['          POND_BASE: ' + yq(String(cfg.pondBase).trim()),
+             '          POND_KEY: ' + yq(String(cfg.pondKey).trim())]
+          : []),
         '',
       )
     }
