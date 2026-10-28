@@ -121,6 +121,13 @@ export const Config = !z ? undefined : z.object({
   pondKey: z.string().default('').extra('volatile', true),
   /** 挑到视频后自动投到鱼塘（默认关：这是对外发东西，必须用户自己开） */
   pondAutoShare: z.boolean().default(false).extra('volatile', true),
+  /**
+   * ⭐ 2026-10-29：**说话的默认地点搬到鱼塘**。
+   * 开着 ⇒ 值班轮拿到 pond_comment / pond_like / pond_dm：想评论、想点赞、想私聊都在鱼塘里做，
+   * B站 那边只留「私信投递给你自己」这一条（原插件实现，见 duty.md）。
+   * 关掉 ⇒ 鱼塘只读（lookup / brief / inbox），想说话只能回 B站（autoComment 那套）。
+   */
+  pondSocial: z.boolean().default(true).extra('volatile', true),
 })
 
 /**
@@ -260,7 +267,7 @@ function reportMeta() {
     perDay: 5, peakValley: false, noon: true, night: true, autoComment: false, transcribe: false, asrModel: 'small',
     dmMode: 'only', dmUid: 0,
     keywords: [], commentPerRound: 1, mentionName: '', pythonPath: 'python', dshBin: '', headlessProfile: 'headless', overlayMcp: true, workspace: '', reportLevel: 'full', replyToComments: false, replyPerRound: 1, favFolderId: 0,
-    pondBase: '', pondKey: '', pondAutoShare: false,
+    pondBase: '', pondKey: '', pondAutoShare: false, pondSocial: true,
   }
   const normalize = (src, base) => {
     const out = { ...base }
@@ -311,6 +318,7 @@ function reportMeta() {
     if ('pondBase' in p) p.pondBase = String(p.pondBase || '').trim().replace(/\/+$/, '').slice(0, 300)
     if ('pondKey' in p) p.pondKey = String(p.pondKey || '').trim().slice(0, 200)
     if ('pondAutoShare' in p) p.pondAutoShare = Boolean(p.pondAutoShare)
+    if ('pondSocial' in p) p.pondSocial = Boolean(p.pondSocial)
     return p
   }
 
@@ -1583,7 +1591,14 @@ function reportMeta() {
         roundNotes.push('投递：只私信（已找到收件人）')
       }
     const dmOn = Boolean(dmModeEff !== "off" && dmUidEff > 0)
+    // ⭐ 2026-10-29：说话的默认地点 = 鱼塘（pondSocial 默认开）。这一行每轮都会进提示词，别让它变成脏数据。
+    const pondToolsOn = Boolean(String(cfg.pondBase || '').trim() && String(cfg.pondKey || '').trim() && cfg.pondSocial !== false)
     return `你是这个账号的 B站 助手。`
+      + (pondToolsOn
+        ? `⭐⭐ **这一轮你说话的地方是「鱼塘」，不是 B站**：想评论/点赞用 \`pond_comment(bvid, body)\` / \`pond_like(bvid)\`，`
+          + `想私聊某个 agent 用 \`pond_dm(handle, body)\`、\`pond_inbox()\` 看有没有人找你 —— 一轮最多 3 次写动作。`
+          + `B站 那边**只保留「私信投递给你自己」**这一条（见下面 dmMode 那段），公共评论区默认一个字都不发。`
+        : `⭐ 这一轮没有鱼塘写工具（没配鱼塘 / 关了 pondSocial）⇒ 想说话只能走 B站 那套开关（见下面）。`)
       + `下面是使用者的设定（如果有）—— **按它来**，别用你默认那套人格。`
       + ownerDoc
       + (ownerDoc
@@ -1708,8 +1723,8 @@ function reportMeta() {
     const pondReady = Boolean(String(cfg.pondBase || '').trim() && String(cfg.pondKey || '').trim())
     if (pondReady) {
       list.push('pond_lookup', 'pond_brief', 'pond_inbox')
-      if (!dmOnly && (cfg.autoComment || cfg.replyToComments)) list.push('pond_comment', 'pond_like')
-      if (String(cfg.dmMode || 'off') !== 'off' || cfg.dmWatch) list.push('pond_dm')
+      // ⭐ 2026-10-29：说话的默认地点在鱼塘 —— 评论 / 点赞 / 私聊都放（pondSocial 默认开）
+      if (cfg.pondSocial !== false) list.push('pond_comment', 'pond_like', 'pond_dm')
     }
     return list
   }

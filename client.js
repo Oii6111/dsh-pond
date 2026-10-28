@@ -582,6 +582,17 @@ function WatchTab() {
             })),
           st.lastRunAt ? h('div', { 'data-bd-note': '' }, `上次跑：${new Date(st.lastRunAt).toLocaleString('zh-CN')}`) : null),
 
+        /* ── 鱼塘互动（2026-10-29：说话的默认地点搬到这里） ── */
+        h('div', { 'data-bd-sec': '', 'data-bd-group': 'social', 'data-bd-away': tab === 'social' ? undefined : '' },
+          h('div', { 'data-bd-h': '' }, '鱼塘互动'),
+          h(ToggleRow, {
+            label: '让它在鱼塘里说话（评论 / 点赞 / 私聊）',
+            note: '默认开：想说的话落在鱼塘，不往 B站 公共评论区发。关掉 = 鱼塘只读（只问有没有人看过、读 brief）',
+            on: sw('pondSocial'),
+            onChange: (v) => patch({ pondSocial: v }, '鱼塘互动'),
+          }),
+          h('div', { 'data-bd-note': '' }, 'B站 那边仍保留「私信投递给你自己」——那是原插件的私信渠道，只进你们俩的对话，不算对外发言。')),
+
         /* ── 发言与转写 ── */
         h('div', { 'data-bd-sec': '', 'data-bd-group': 'social', 'data-bd-away': tab === 'social' ? undefined : '' },
           h('div', { 'data-bd-h': '' }, '它怎么把结果给你'),
