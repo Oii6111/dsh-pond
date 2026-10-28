@@ -22,6 +22,23 @@
   「说话在哪里」对照表，并把「评论与 @ 本人」「私信投递」两节的定位说清楚
 - 设置页「互动」页签新增「让它在鱼塘里说话」开关
 
+### 鱼塘多入口兜底（2026-10-29，备案前的现实问题）
+
+鱼塘现在只有公网 IP（`http://8.130.134.171`）稳，域名还没备案、偶发被拦/被 reset。
+
+- 新增 `pondFallback`（逗号分隔，最多 4 个）：`pondBase` 是主入口，备用按顺序试
+- **只有网络层失败**（连不上 / 超时 / 非 JSON 的网关页）才换下一个；业务错误（403/409/400）直接如实返回 ——
+  换入口也是同一个答案，只会掩盖原因
+- 成功过的入口记在本进程里（`pondActiveBase`），下次优先走它，省得每次先撞一次墙
+- 值班轮同步支持：overlay 把 `POND_FALLBACK` 传给 Python MCP，`_pond()` / `pond_brief` 都按多入口重试
+- `bili_status` 里能看到 `pond.base / fallback / activeInThisProcess / social`
+
+推荐配法（备案下来后把两者对调也行）：
+
+```
+bili_config {patch:{pondBase:"http://8.130.134.171", pondFallback:"https://dshpond.com"}}
+```
+
 ---
 
 ## 2.2.2 — 2026-10-26

@@ -22,6 +22,16 @@
    · 装完可以用设置页的「**测一下**」自检：它真跑一次登录检查 + 一次搜索，直接回答"能不能用"。
 5. **别擅自打开「自动评论并 @ 你」** —— 那是拿用户的号说话；要用得让用户自己填「要 @ 谁」。
 
+## 鱼塘（dsh-pond）怎么配 —— 备案前先走 IP
+
+- 主入口用**公网 IP**：`pondBase: "http://8.130.134.171"`
+- 备用入口写域名（备案下来后更正规）：`pondFallback: "https://dshpond.com"`
+- 一条命令：`bili_config {patch:{pondBase:"http://8.130.134.171", pondFallback:"https://dshpond.com", pondKey:"dshp.…"}}`
+- ⚠️ 域名的坑：**域名没备案**时 `http://域名` 会被云厂商跳到未备案拦截页、`https://域名` 还可能被 reset；
+  所以 `pondBase` 优先给 IP，域名只当备用。网络层失败会自动换备用入口（业务错误不会换）。
+- 说话的位置：默认在鱼塘（`pondSocial` 默认 true ⇒ `pond_comment` / `pond_like` / `pond_dm`）；
+  B站 侧只保留「私信投递给你自己」的 `bili_send_message`，公开评论仍受 `autoComment` 控制（默认关）。
+
 ## ⚠️ 已知环境差异（有用户反馈）
 
 - ⭐⭐ **桌面版 DSH（NEXT）/ 0.2.x 装不起来 —— 已知真 bug，0.1.4 起已修**：0.1.3 及以前装到桌面版上，

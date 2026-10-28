@@ -117,6 +117,11 @@ export const Config = !z ? undefined : z.object({
   favFolderId: z.number().default(0).extra('volatile', true),
   /** 鱼塘（社区服务端）地址，例如 http://127.0.0.1:8788；留空 = 不使用 pond_share */
   pondBase: z.string().default('').extra('volatile', true),
+  /**
+   * 备用入口（逗号分隔，按顺序试）。典型用法：主 = 公网 IP（备案前最稳），备 = 域名（备案下来后更正规）。
+   * 网络层失败（连不上 / 超时 / 网关 5xx / 非 JSON）才换下一个；业务错误（403/409/400）不换，直接如实报。
+   */
+  pondFallback: z.string().default('').extra('volatile', true),
   /** 鱼塘发的 agent key（dshp.<prefix>.<secret>）—— 只存在本机 */
   pondKey: z.string().default('').extra('volatile', true),
   /** 挑到视频后自动投到鱼塘（默认关：这是对外发东西，必须用户自己开） */
@@ -267,7 +272,7 @@ function reportMeta() {
     perDay: 5, peakValley: false, noon: true, night: true, autoComment: false, transcribe: false, asrModel: 'small',
     dmMode: 'only', dmUid: 0,
     keywords: [], commentPerRound: 1, mentionName: '', pythonPath: 'python', dshBin: '', headlessProfile: 'headless', overlayMcp: true, workspace: '', reportLevel: 'full', replyToComments: false, replyPerRound: 1, favFolderId: 0,
-    pondBase: '', pondKey: '', pondAutoShare: false, pondSocial: true,
+    pondBase: '', pondFallback: '', pondKey: '', pondAutoShare: false, pondSocial: true,
   }
   const normalize = (src, base) => {
     const out = { ...base }
@@ -316,6 +321,14 @@ function reportMeta() {
     if ('favFolderId' in p) p.favFolderId = Math.max(0, Math.floor(Number(p.favFolderId) || 0))
     if ('commentPerRound' in p) p.commentPerRound = Math.max(0, Math.min(Number(p.commentPerRound) || 0, 20))
     if ('pondBase' in p) p.pondBase = String(p.pondBase || '').trim().replace(/\/+$/, '').slice(0, 300)
+    if ('pondFallback' in p) {
+      const list = String(p.pondFallback || '')
+        .split(/[,\s]+/)
+        .map((s) => s.trim().replace(/\/+$/, ''))
+        .filter(Boolean)
+        .slice(0, 4)
+      p.pondFallback = [...new Set(list)].join(',')
+    }
     if ('pondKey' in p) p.pondKey = String(p.pondKey || '').trim().slice(0, 200)
     if ('pondAutoShare' in p) p.pondAutoShare = Boolean(p.pondAutoShare)
     if ('pondSocial' in p) p.pondSocial = Boolean(p.pondSocial)
@@ -729,6 +742,44 @@ function reportMeta() {
    * 服务端只存结果、再分发给站内其它 agent 读。
    * 所以这里不下载视频、不自己抽帧，只把已经拿到的东西打包 POST 过去。
    */
+
+  /**
+   * ⭐ 2026-10-29：**多入口兜底**。
+   * 起因：鱼塘现在只在公网 IP（http://8.130.134.171）上稳，域名还没备案、偶发被拦/被 reset。
+   * ⇒ pondBase 是主入口，pondFallback 是备用（逗号分隔，最多 4 个），按顺序试：
+   *    · 只有**网络层**失败（连不上 / 超时 / 非 JSON 的网关页）才换下一个；
+   *    · 服务端明确的业务错误（403 key 权限、409 重复、400 参数）不换 —— 换入口也是同一个答案，只会掩盖原因。
+   * 成功过的入口会被记住（pondActiveBase），本进程内下次优先走它，省得每次先撞一次墙。
+   */
+  let pondActiveBase = ''
+  const pondBases = () => {
+    const raw = [cfg.pondBase, ...String(cfg.pondFallback || '').split(',')]
+    const list = []
+    for (const b of raw) {
+      const v = String(b || '').trim().replace(/\/+$/, '')
+      if (v && !list.includes(v)) list.push(v)
+    }
+    if (pondActiveBase && list.includes(pondActiveBase)) {
+      return [pondActiveBase, ...list.filter((b) => b !== pondActiveBase)]
+    }
+    return list
+  }
+
+  /** 单个入口发一次请求；不判断业务成败，交给调用方 */
+  const pondFetch = async (base, pathname, { method = 'GET', body, key, exec } = {}) => {
+    const headers = { authorization: `Bearer ${key}` }
+    const init = { method, headers, signal: exec?.signal }
+    if (body !== undefined) {
+      headers['content-type'] = 'application/json'
+      init.body = JSON.stringify(body)
+    }
+    const res = await fetch(base + pathname, init)
+    const text = await res.text()
+    let json = null
+    try { json = JSON.parse(text) } catch { /* 非 JSON ⇒ 多半是网关/拦截页 */ }
+    return { res, text, json }
+  }
+
   tool({
     name: 'pond_share',
     description: '将本地理解好的视频文字总结和字幕分享给鱼塘，不上传图片。画面理解请先在本地调用 bili_frames，写入 digest。\n'
@@ -742,12 +793,12 @@ function reportMeta() {
       tags: { type: 'array', items: { type: 'string' }, description: '标签（可选，最多 5 个）' },
     },
     async execute(args, exec) {
-      const base = String(cfg.pondBase || '').trim().replace(/\/+$/, '')
+      const bases = pondBases()
       const key = String(cfg.pondKey || '').trim()
-      if (!base || !key) {
+      if (!bases.length || !key) {
         return {
           ok: false,
-          hint: '还没配鱼塘：bili_config {patch:{pondBase:"http://127.0.0.1:8788", pondKey:"dshp.…"}}'
+          hint: '还没配鱼塘：bili_config {patch:{pondBase:"http://8.130.134.171", pondFallback:"https://dshpond.com", pondKey:"dshp.…"}}'
             + '（key 由社区管理员发给你，形如 dshp.<prefix>.<secret>）',
         }
       }
@@ -798,47 +849,54 @@ function reportMeta() {
         content,
       }
       // 有元数据 ⇒ 交给 /import（服务端零访问 B站）；没有 ⇒ 老路径
-      let endpoint = meta ? '/v1/videos/import' : '/v1/videos'
-      let payload = meta ? { ...common, ...meta } : { ...common, url: `https://www.bilibili.com/video/${bvid}/` }
+      const endpoint0 = meta ? '/v1/videos/import' : '/v1/videos'
+      const payload0 = meta ? { ...common, ...meta } : { ...common, url: `https://www.bilibili.com/video/${bvid}/` }
 
-      let res
-      let text
-      try {
-        res = await fetch(`${base}${endpoint}`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-          body: JSON.stringify(payload),
-          signal: exec?.signal,
-        })
-        text = await res.text()
-        // 老服务没有 /import（404 Route not found）⇒ 退回老路径再试一次
-        if (meta && res.status === 404) {
-          endpoint = '/v1/videos'
-          payload = { ...common, url: `https://www.bilibili.com/video/${bvid}/` }
-          res = await fetch(`${base}${endpoint}`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-            body: JSON.stringify(payload),
-            signal: exec?.signal,
-          })
-          text = await res.text()
+      // ⭐ 多入口：网络层失败才换下一个；业务错误（403/409/400）如实返回，别拿换入口掩盖原因
+      const tried = []
+      let won = null
+      for (const base of bases) {
+        try {
+          let { res, text, json } = await pondFetch(base, endpoint0, { method: 'POST', body: payload0, key, exec })
+          let endpoint = endpoint0
+          // 老服务没有 /import（404 Route not found）⇒ 同入口退回老路径再试一次
+          if (meta && res.status === 404) {
+            endpoint = '/v1/videos'
+            ;({ res, text, json } = await pondFetch(base, endpoint, {
+              method: 'POST', body: { ...common, url: `https://www.bilibili.com/video/${bvid}/` }, key, exec,
+            }))
+          }
+          if (!json) {
+            tried.push(`${base} → HTTP ${res.status}（非 JSON，像网关/拦截页）`)
+            continue
+          }
+          if (!res.ok || json.ok !== true) {
+            return {
+              ok: false,
+              status: res.status,
+              error: json?.error?.message || String(text).slice(0, 300) || '鱼塘返回了空响应',
+              hint: res.status === 403 ? 'key 没有 write:publish 权限，或这条视频已经有了（去原帖下评论即可）' : undefined,
+              base,
+              tried: tried.length ? tried : undefined,
+            }
+          }
+          pondActiveBase = base
+          won = { base, body: json, endpoint }
+          break
+        } catch (e) {
+          tried.push(`${base} → ${String(e?.message ?? e)}`)
         }
-      } catch (e) {
-        return { ok: false, error: '连不上鱼塘：' + String(e?.message ?? e), base }
       }
-
-      let body = null
-      try { body = JSON.parse(text) } catch { /* 非 JSON，多半是网关错误页 */ }
-      if (!res.ok || !body || body.ok !== true) {
+      if (!won) {
         return {
           ok: false,
-          status: res.status,
-          error: body?.error?.message || String(text).slice(0, 300) || '鱼塘返回了空响应',
-          hint: res.status === 403 ? 'key 没有 write:publish 权限，或这条视频已经有了（去原帖下评论即可）' : undefined,
-          base,
+          error: '连不上鱼塘（所有入口都失败）',
+          tried,
+          hint: 'bili_config {patch:{pondBase:"http://8.130.134.171", pondFallback:"https://dshpond.com"}} —— 主入口和备用都会按顺序试',
         }
       }
 
+      const { base, body } = won
       return {
         ok: true,
         post_url: `${base}/p/${body.post?.id ?? ''}`,
@@ -847,6 +905,8 @@ function reportMeta() {
         content_saved: Boolean(body.content_saved),
         frames_sent: 0,
         transcript_chars: transcript.length,
+        base,
+        ...(tried.length ? { tried } : {}),
         hint: body.deduped
           ? '这条池子里已经有了：你的投放被记成一次转发，内容也存进去了'
           : '投好了。站内 agent 刷 feed 会直接读到这段 digest',
@@ -863,41 +923,40 @@ function reportMeta() {
    * 没配 pondBase/pondKey 时不静默失败，回一句「怎么配」。
    */
   const pondReq = async (pathname, { method = 'GET', body, exec } = {}) => {
-    const base = String(cfg.pondBase || '').trim().replace(/\/+$/, '')
+    const bases = pondBases()
     const key = String(cfg.pondKey || '').trim()
-    if (!base || !key) {
+    if (!bases.length || !key) {
       return {
         ok: false,
-        error: '还没配鱼塘（pondBase / pondKey）',
-        hint: 'bili_config {patch:{pondBase:"http://127.0.0.1:8787", pondKey:"dshp.<prefix>.<secret>"}}',
+        error: '还没配鱼塘（pondBase / pondFallback / pondKey）',
+        hint: 'bili_config {patch:{pondBase:"http://8.130.134.171", pondFallback:"https://dshpond.com", pondKey:"dshp.<prefix>.<secret>"}}',
       }
     }
-    const headers = { authorization: `Bearer ${key}` }
-    const init = { method, headers, signal: exec?.signal }
-    if (body !== undefined) {
-      headers['content-type'] = 'application/json'
-      init.body = JSON.stringify(body)
-    }
-    let res
-    let text
-    try {
-      res = await fetch(base + pathname, init)
-      text = await res.text()
-    } catch (e) {
-      return { ok: false, error: '连不上鱼塘：' + String(e?.message ?? e), base }
-    }
-    let json = null
-    try { json = JSON.parse(text) } catch { /* 非 JSON，多半是网关错误页 */ }
-    if (!res.ok || !json || json.ok !== true) {
-      return {
-        ok: false,
-        status: res.status,
-        error: json?.error?.message || String(text).slice(0, 300) || '鱼塘返回了空响应',
-        hint: res.status === 403 ? '这把 key 没有做这件事的 scope —— 让池主补发或换一把' : undefined,
-        base,
+    const tried = []
+    for (const base of bases) {
+      try {
+        const { res, text, json } = await pondFetch(base, pathname, { method, body, key, exec })
+        if (!json) {
+          tried.push(`${base} → HTTP ${res.status}（非 JSON，像网关/拦截页）`)
+          continue
+        }
+        if (!res.ok || json.ok !== true) {
+          return {
+            ok: false,
+            status: res.status,
+            error: json?.error?.message || String(text).slice(0, 300) || '鱼塘返回了空响应',
+            hint: res.status === 403 ? '这把 key 没有做这件事的 scope —— 让池主补发或换一把' : undefined,
+            base,
+            tried: tried.length ? tried : undefined,
+          }
+        }
+        pondActiveBase = base
+        return { ok: true, base, data: json, ...(tried.length ? { tried } : {}) }
+      } catch (e) {
+        tried.push(`${base} → ${String(e?.message ?? e)}`)
       }
     }
-    return { ok: true, base, data: json }
+    return { ok: false, error: '连不上鱼塘（所有入口都失败）', tried }
   }
 
   /** 把 bvid 换成 video_id / post_id（评论点赞都要 post_id） */
@@ -1170,6 +1229,13 @@ function reportMeta() {
         dmMode: cfg.dmMode,
         dmUid: Number(cfg.dmUid) || 0,
         transcribe: cfg.transcribe,
+        // ⭐ 鱼塘：主入口 / 备用入口 / 本进程里最后走通的那个（排障时一眼能看出走的是哪条）
+        pond: {
+          base: String(cfg.pondBase || ''),
+          fallback: String(cfg.pondFallback || ''),
+          activeInThisProcess: pondActiveBase || '',
+          social: cfg.pondSocial !== false,
+        },
       loggedIn: hasCredential(),
         home: stateDir,
         report: join(outDir, `${dayKey(now)}.md`),
@@ -1818,6 +1884,7 @@ function reportMeta() {
         // ⭐ 鱼塘的 base/key 也走 env（只给这一轮的子进程，不落到全局环境变量里）
         ...(String(cfg.pondBase || '').trim() && String(cfg.pondKey || '').trim()
           ? ['          POND_BASE: ' + yq(String(cfg.pondBase).trim()),
+             ...(String(cfg.pondFallback || '').trim() ? ['          POND_FALLBACK: ' + yq(String(cfg.pondFallback).trim())] : []),
              '          POND_KEY: ' + yq(String(cfg.pondKey).trim())]
           : []),
         '',

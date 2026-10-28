@@ -2020,34 +2020,52 @@ async def bili_recommend(ps: int = 20) -> str:
 #   ⚠️ 写动作（评论 / 点赞 / 私信）额外过 _guard()：白名单里没有就连调用都不做。
 POND_BASE = os.environ.get("POND_BASE", "").rstrip("/")
 POND_KEY = os.environ.get("POND_KEY", "")
+# ⭐ 备用入口（逗号分隔）：主入口网络层失败才换下一个；业务错误不换（换入口也是同一个答案）
+POND_FALLBACK = os.environ.get("POND_FALLBACK", "")
+
+
+def _pond_bases():
+    out = []
+    for raw in [POND_BASE] + POND_FALLBACK.split(","):
+        v = (raw or "").strip().rstrip("/")
+        if v and v not in out:
+            out.append(v)
+    return out
 
 
 def _pond(method: str, path: str, payload: dict | None = None):
-    """最小的鱼塘客户端（stdlib urllib，不引新依赖）。返回 (ok, dict 或错误文字)"""
-    if not POND_BASE or not POND_KEY:
-        return False, "没配鱼塘：设置页填 pondBase / pondKey（或 POND_BASE / POND_KEY）"
+    """最小的鱼塘客户端（stdlib urllib，不引新依赖）。返回 (ok, dict 或错误文字)。
+    多个入口时按顺序试，只有网络层失败才换下一个。"""
+    bases = _pond_bases()
+    if not bases or not POND_KEY:
+        return False, "没配鱼塘：设置页填 pondBase / pondKey（或 POND_BASE / POND_FALLBACK / POND_KEY）"
     data = None
     headers = {"Authorization": "Bearer " + POND_KEY, "Accept": "application/json"}
     if payload is not None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json; charset=utf-8"
-    req = urllib.request.Request(POND_BASE + path, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            status, raw = r.status, r.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as e:
-        status, raw = e.code, e.read().decode("utf-8", "replace")
-    except Exception as e:  # 连不上 / 超时
-        return False, "连不上鱼塘：" + str(e)
-    try:
-        body = json.loads(raw)
-    except Exception:
-        return False, "鱼塘返回的不是 JSON（HTTP %s）：%s" % (status, raw[:300])
-    if status >= 400 or not body.get("ok"):
-        err = body.get("error")
-        msg = err.get("message") if isinstance(err, dict) else err
-        return False, "鱼塘拒绝（HTTP %s）：%s" % (status, msg or raw[:300])
-    return True, body
+    tried = []
+    for base in bases:
+        req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                status, raw = r.status, r.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            status, raw = e.code, e.read().decode("utf-8", "replace")
+        except Exception as e:  # 连不上 / 超时 ⇒ 换下一个入口
+            tried.append("%s（%s）" % (base, e))
+            continue
+        try:
+            body = json.loads(raw)
+        except Exception:  # 非 JSON ⇒ 多半是网关/拦截页，也算这一条不通
+            tried.append("%s（HTTP %s，非 JSON）" % (base, status))
+            continue
+        if status >= 400 or not body.get("ok"):
+            err = body.get("error")
+            msg = err.get("message") if isinstance(err, dict) else err
+            return False, "鱼塘拒绝（HTTP %s）：%s" % (status, msg or raw[:300])
+        return True, body
+    return False, "连不上鱼塘（所有入口都失败）：" + "；".join(tried)
 
 
 def _pond_lookup_raw(bvid: str):
@@ -2093,15 +2111,19 @@ def pond_brief(bvid: str = "", video_id: str = "") -> str:
         if not body.get("found"):
             return "鱼塘里没有这条 —— 该你自己看（看完可以 pond_share 补上来）"
         vid = str(body.get("video_id") or "")
-    if not POND_BASE or not POND_KEY:
-        return "没配鱼塘：设置页填 pondBase / pondKey（或 POND_BASE / POND_KEY）"
-    req = urllib.request.Request(POND_BASE + "/v1/videos/" + urllib.parse.quote(vid) + "/brief",
-                                 headers={"Authorization": "Bearer " + POND_KEY})
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return r.read().decode("utf-8", "replace")
-    except Exception as e:
-        return "读 brief 失败：" + str(e)
+    bases = _pond_bases()
+    if not bases or not POND_KEY:
+        return "没配鱼塘：设置页填 pondBase / pondKey（或 POND_BASE / POND_FALLBACK / POND_KEY）"
+    failed = []
+    for base in bases:
+        req = urllib.request.Request(base + "/v1/videos/" + urllib.parse.quote(vid) + "/brief",
+                                     headers={"Authorization": "Bearer " + POND_KEY})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return r.read().decode("utf-8", "replace")
+        except Exception as e:  # 换下一个入口
+            failed.append("%s（%s）" % (base, e))
+    return "读 brief 失败（所有入口）：" + "；".join(failed)
 
 
 @tool()
