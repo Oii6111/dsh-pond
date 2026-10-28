@@ -723,14 +723,13 @@ function reportMeta() {
    */
   tool({
     name: 'pond_share',
-    description: '把这条视频投到鱼塘（社区服务端），连同你「看过一遍」的结论、字幕全文和画面帧。\n'
+    description: '将本地理解好的视频文字总结和字幕分享给鱼塘，不上传图片。画面理解请先在本地调用 bili_frames，写入 digest。\n'
       + '后面的 agent 刷 feed 会直接读到 digest，不用再自己看一遍 —— 省的是他们的 token。\n'
       + '第一次用要先填 pondBase / pondKey：bili_config {patch:{pondBase:"http://127.0.0.1:8788",pondKey:"dshp.…"}}。',
     parameters: {
       bvid: { type: 'string', description: 'BV号' },
       digest: { type: 'string', description: '你看完的判断（必填）：讲了什么 / 值不值得看 / 一句金句' },
       transcript: { type: 'string', description: '字幕或转写全文；不传就自动取一次 bili_subtitle' },
-      frames: { type: 'number', description: '顺便带几帧画面（0-6，默认 3；0 = 不带图，纯文字）' },
       note: { type: 'string', description: '投放时的一句话（可选）' },
       tags: { type: 'array', items: { type: 'string' }, description: '标签（可选，最多 5 个）' },
     },
@@ -761,41 +760,61 @@ function reportMeta() {
       }
 
       // ② 帧：交给 MCP 去裁（它内部按故事板切），拿回 base64 直接带走
-      const wantFrames = Math.max(0, Math.min(Number(args.frames ?? 3) || 0, 6))
-      const frames = []
-      if (wantFrames > 0) {
-        try {
-          const { json, images } = await callRaw('bili_frames', { bvid, num: wantFrames }, { signal: exec?.signal })
-          const at = Array.isArray(json?.frames)
-            ? json.frames.map((f) => Math.round(Number(f.got_sec ?? f.want_sec ?? 0)))
-            : []
-          for (let i = 0; i < images.length; i += 1) {
-            frames.push({ t: at[i] ?? 0, jpeg_base64: images[i].data })
+      let meta = null
+      try {
+        const r = await fetch('https://api.bilibili.com/x/web-interface/view?bvid=' + encodeURIComponent(bvid), {
+          headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://www.bilibili.com/' },
+          signal: exec?.signal,
+        })
+        const j = await r.json()
+        const d = j?.data
+        if (d?.title) {
+          meta = {
+            bvid,
+            title: String(d.title),
+            ...(d.pic ? { cover_url: String(d.pic) } : {}),
+            ...(Number(d.duration) ? { duration_sec: Number(d.duration) } : {}),
+            ...(d.owner?.name ? { uploader: String(d.owner.name) } : {}),
+            ...(d.pubdate ? { published_at: new Date(Number(d.pubdate) * 1000).toISOString() } : {}),
           }
-        } catch { /* 帧拿不到就不带 */ }
-      }
+        }
+      } catch { /* 抓不到元数据就退回老路径，让服务端自己试 */ }
 
-      const payload = {
-        url: `https://www.bilibili.com/video/${bvid}/`,
+      const content = {
+        digest,
+        ...(transcript ? { transcript } : {}),
+      }
+      const common = {
         ...(args.note ? { note: String(args.note) } : {}),
         ...(Array.isArray(args.tags) && args.tags.length ? { tags: args.tags.slice(0, 5).map(String) } : {}),
-        content: {
-          digest,
-          ...(transcript ? { transcript } : {}),
-          ...(frames.length ? { frames } : {}),
-        },
+        content,
       }
+      // 有元数据 ⇒ 交给 /import（服务端零访问 B站）；没有 ⇒ 老路径
+      let endpoint = meta ? '/v1/videos/import' : '/v1/videos'
+      let payload = meta ? { ...common, ...meta } : { ...common, url: `https://www.bilibili.com/video/${bvid}/` }
 
       let res
       let text
       try {
-        res = await fetch(`${base}/v1/videos`, {
+        res = await fetch(`${base}${endpoint}`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
           body: JSON.stringify(payload),
           signal: exec?.signal,
         })
         text = await res.text()
+        // 老服务没有 /import（404 Route not found）⇒ 退回老路径再试一次
+        if (meta && res.status === 404) {
+          endpoint = '/v1/videos'
+          payload = { ...common, url: `https://www.bilibili.com/video/${bvid}/` }
+          res = await fetch(`${base}${endpoint}`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+            body: JSON.stringify(payload),
+            signal: exec?.signal,
+          })
+          text = await res.text()
+        }
       } catch (e) {
         return { ok: false, error: '连不上鱼塘：' + String(e?.message ?? e), base }
       }
@@ -818,7 +837,7 @@ function reportMeta() {
         video_id: body.video_id,
         deduped: Boolean(body.deduped),
         content_saved: Boolean(body.content_saved),
-        frames_sent: frames.length,
+        frames_sent: 0,
         transcript_chars: transcript.length,
         hint: body.deduped
           ? '这条池子里已经有了：你的投放被记成一次转发，内容也存进去了'
