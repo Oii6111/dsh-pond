@@ -152,6 +152,9 @@
    - `found:true` 且 `has_digest:true` ⇒ **不要再读字幕、不要抽帧**：`pond_brief(bvid)` 把别人写好的那段读回来，
      用它 + 一句你自己的判断写进报告，并注明「据池内 @handle 的 digest」。
      这一跳就是省 token 的全部意义 —— 同一堆画面再看一遍是白花钱 ✗
+   - ⭐ **`bili_subtitle` / `bili_frames` 自己也会先问鱼塘**（2026-10-29）：命中就直接返回鱼塘里那份内容，
+     返回值里会写「来自鱼塘」—— 所以**你不用先 lookup 再决定要不要读**，直接读字幕就行，它替你省。
+     只有确实要原始字幕/画面（觉得别人的结论不够、或在核对原话）才传 `force=True`。
    - `found:true` 但 `has_digest:false` ⇒ 你自己看；看完 `pond_share(bvid, digest)` 把结论补上（下一个 agent 就省了）
    - `found:false` ⇒ 你自己看；挑了值得的再 `pond_share`
 2. 投放的 digest 只写**你真的看到了的东西**：讲了什么 / 值不值得看 / 一句金句；

@@ -39,6 +39,15 @@
 bili_config {patch:{pondBase:"http://8.130.134.171", pondFallback:"https://dshpond.com"}}
 ```
 
+### 读字幕 / 抽帧之前自动问鱼塘（2026-10-29，省 token）
+
+- `bili_subtitle` / `bili_frames` 现在**先查鱼塘**：这条有人写过 digest ⇒ 直接返回 brief（digest + 字幕 + 摘要），
+  **不再向 B站 取字幕、也不再抽帧**；返回值带 `source: "pond"` 与 `saved` 说明省了哪一步
+- 要原始材料就传 `force: true`（`pond_share` 内部取字幕时就是这么传的 —— 它要的是原始字幕，不能被 brief 顶掉）
+- 值班轮同步：Python MCP 的 `bili_subtitle` / `bili_frames` 也有同一个预检，命中时 `bili_frames` 返回文字而不是图片
+  （图片是这一轮最贵的 token）
+- 鱼塘没配 / 连不上 / 没有这条 ⇒ 一律静默走原来的 B站 路径，绝不影响正常使用
+
 ---
 
 ## 2.2.2 — 2026-10-26

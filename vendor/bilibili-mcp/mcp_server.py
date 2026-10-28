@@ -508,7 +508,7 @@ async def bili_comments(bvid: str, num: int = 30) -> str:
 # ========== Tool 3: 获取字幕 ==========
 
 @tool()
-async def bili_subtitle(bvid: str) -> str:
+async def bili_subtitle(bvid: str, force: bool = False) -> str:
     """
     获取B站视频的AI字幕（语音转文字）
 
@@ -518,6 +518,10 @@ async def bili_subtitle(bvid: str) -> str:
     Returns:
         视频的完整字幕文本
     """
+    if not force:
+        hit = _pond_preflight(bvid)
+        if hit:
+            return hit
     cred = get_cred()
     v = video.Video(bvid=bvid, credential=cred)
 
@@ -1800,7 +1804,7 @@ def _crop_tile(sheet: bytes, tile_index: int, tw: int, th: int) -> bytes:
 
 
 @tool()
-async def bili_frames(bvid: str, num: int = 3, at: list | None = None) -> list:
+async def bili_frames(bvid: str, num: int = 3, at: list | None = None, force: bool = False) -> list:
     """
     看这个视频里的画面（从 B 站自带的故事板里裁几帧）
 
@@ -1817,6 +1821,10 @@ async def bili_frames(bvid: str, num: int = 3, at: list | None = None) -> list:
         失败会写进 failed。**多P 视频的故事板通常只覆盖第 1P**，返回里会用
         covered_sec / pages 标明实际覆盖范围。图能否被看见取决于模型是否支持图片输入。
     """
+    if not force:
+        hit = _pond_preflight(bvid)
+        if hit:
+            return [TextContent(type="text", text=hit)]
     cred = load_credential()          # 故事板不登录也能取
     try:
         v = video.Video(bvid=bvid, credential=cred)
@@ -2031,6 +2039,43 @@ def _pond_bases():
         if v and v not in out:
             out.append(v)
     return out
+
+
+def _pond_preflight(bvid: str) -> str:
+    """读字幕 / 抽帧之前先问鱼塘：这条有人看过吗？命中就返回那段文字（省 token），否则空串。
+    任何异常都当"没有" —— 鱼塘不可用时绝不能挡住正常的 B站 读取。"""
+    try:
+        if not _pond_bases() or not POND_KEY:
+            return ""
+        ok, body = _pond("GET", "/v1/videos/lookup?bvid=" + urllib.parse.quote(str(bvid or "").strip()))
+        if not ok or not body.get("found") or not body.get("has_digest"):
+            return ""
+        vid = str(body.get("video_id") or "")
+        if not vid:
+            return ""
+        ok2, brief = _pond_text("/v1/videos/" + urllib.parse.quote(vid) + "/brief")
+        if not ok2 or not brief:
+            return ""
+        return ("【来自鱼塘｜这条已经有人看过，没有再向 B站 取字幕/抽帧】\n"
+                + brief
+                + "\n\n（确实要原始材料再调一次并传 force=True；想补充你的判断用 pond_share）")
+    except Exception:
+        return ""
+
+
+def _pond_text(path: str):
+    """取纯文本端点（brief 是 text/plain，不能走 _pond 的 JSON 解析）；多入口轮流试。"""
+    bases = _pond_bases()
+    if not bases or not POND_KEY:
+        return False, ""
+    for base in bases:
+        req = urllib.request.Request(base + path, headers={"Authorization": "Bearer " + POND_KEY})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return True, r.read().decode("utf-8", "replace")
+        except Exception:
+            continue
+    return False, ""
 
 
 def _pond(method: str, path: str, payload: dict | None = None):

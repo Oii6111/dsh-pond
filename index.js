@@ -616,9 +616,36 @@ function reportMeta() {
   tool({
     name: 'bili_subtitle',
     description: '取一个视频的字幕（AI 字幕）全文。**判断内容就靠它** —— 没有字幕时，'
-      + '若设置里开了「本地转写」再想别的办法，否则直接跳过这条。',
-    parameters: { bvid: { type: 'string', description: 'BV号' } },
-    async execute(args) { return call('bili_subtitle', { bvid: String(args.bvid ?? '') }) },
+      + '若设置里开了「本地转写」再想别的办法，否则直接跳过这条。\n'
+      + '⭐ 2026-10-29：**会先问鱼塘**——这条已经有人看过的话，直接返回那份内容（digest + 字幕 + 摘要），'
+      + '不再向 B站 取字幕（省 token）。确实要原始字幕时传 force: true。',
+    parameters: {
+      bvid: { type: 'string', description: 'BV号' },
+      force: { type: 'boolean', description: 'true = 跳过鱼塘检查，强制向 B站 取字幕' },
+    },
+    async execute(args, exec) {
+      const bvid = String(args.bvid ?? '')
+      // ⭐ 抽帧/读字幕之前先问鱼塘：命中就别花第二次 token
+      if (!args.force) {
+        const hit = await pondPeek(bvid, exec)
+        if (hit) {
+          const brief = await pondBriefText(hit.video_id, exec)
+          if (brief) {
+            return {
+              bvid,
+              source: 'pond',
+              saved: '没有向 B站 取字幕 —— 鱼塘里已经有人看过这条，直接给的是那份内容',
+              video_id: hit.video_id,
+              post_id: hit.post_id,
+              has_transcript: hit.has_transcript,
+              brief,
+              hint: '要用原始字幕的话再调一次 bili_subtitle(bvid, force=true)；想补充你的判断用 pond_share。',
+            }
+          }
+        }
+      }
+      return call('bili_subtitle', { bvid })
+    },
   })
 
   tool({
@@ -711,17 +738,40 @@ function reportMeta() {
     name: 'bili_frames',
     description: '看视频里的画面（从 B 站自带的故事板裁 1-6 帧，每帧 480×270）。\n'
       + '想知道"这条视频到底拍了什么"就用它 —— 字幕告诉你说什么，画面告诉你拍的是什么。\n'
-      + '默认按时长均匀取 3 帧；想盯某个时刻（比如字幕里提到的那段）就传 at。',
+      + '默认按时长均匀取 3 帧；想盯某个时刻（比如字幕里提到的那段）就传 at。\n'
+      + '⭐ 2026-10-29：**会先问鱼塘**——这条已经有人看过的话，直接返回那份内容、不抽帧（省 token）；确实要画面时传 force: true。',
     parameters: {
       bvid: { type: 'string', description: 'BV号' },
+      force: { type: 'boolean', description: 'true = 跳过鱼塘检查，强制抽帧' },
       num: { type: 'number', description: '取几帧，1-6，默认 3' },
       at: { type: 'array', items: { type: 'number' }, description: '指定时间点（秒）列表；传了就以它为准，忽略 num' },
     },
     output: imageOutput,
     async execute(args, exec) {
+      const bvidArg = String(args.bvid ?? '')
+      // ⭐ 抽帧之前先问鱼塘：命中就别为同一条视频再付一次图片 token
+      if (!args.force) {
+        const hit = await pondPeek(bvidArg, exec)
+        if (hit) {
+          const brief = await pondBriefText(hit.video_id, exec)
+          if (brief) {
+            return {
+              bvid: bvidArg,
+              ok: true,
+              source: 'pond',
+              image_attached: false,
+              saved: '没有抽帧 —— 鱼塘里已经有人看过这条，直接给的是那份内容',
+              video_id: hit.video_id,
+              post_id: hit.post_id,
+              brief,
+              hint: '确实要看画面再调一次 bili_frames(bvid, force=true)。',
+            }
+          }
+        }
+      }
       const at = Array.isArray(args.at) ? args.at.map(Number).filter(Number.isFinite) : undefined
       const { json, images } = await callRaw('bili_frames', {
-        bvid: String(args.bvid ?? ''),
+        bvid: bvidArg,
         num: Math.max(1, Math.min(Number(args.num) || 3, 6)),
         ...(at && at.length ? { at } : {}),
       }, { signal: exec?.signal })
@@ -780,6 +830,40 @@ function reportMeta() {
     return { res, text, json }
   }
 
+  /**
+   * ⭐ 2026-10-29：**读字幕 / 抽帧之前先问鱼塘**。
+   * 命中（found + has_digest）就返回概况，调用方直接取 brief，不再花一次 B站 的 token。
+   * 鱼塘没配 / 连不上 / 没有这条 ⇒ 一律返回 null，**绝不挡住正常的 B站 读取**。
+   */
+  const pondPeek = async (bvid, exec) => {
+    const key = String(cfg.pondKey || '').trim()
+    if (!key || !pondBases().length) return null
+    try {
+      const r = await pondReq('/v1/videos/lookup?bvid=' + encodeURIComponent(bvid), { exec })
+      if (!r.ok) return null
+      const d = r.data || {}
+      if (!d.found || !d.has_digest || !d.video_id) return null
+      return {
+        video_id: String(d.video_id),
+        post_id: d.post_id ?? null,
+        has_transcript: Boolean(d.has_transcript),
+      }
+    } catch { return null }
+  }
+
+  /** 取某条 video 的纯文本 brief（多入口，谁通用谁） */
+  const pondBriefText = async (videoId, exec) => {
+    const key = String(cfg.pondKey || '').trim()
+    if (!key) return ''
+    for (const base of pondBases()) {
+      try {
+        const { res, text } = await pondFetch(base, '/v1/videos/' + encodeURIComponent(videoId) + '/brief', { key, exec })
+        if (res.ok && text && text.trim()) return text
+      } catch { /* 换下一个入口 */ }
+    }
+    return ''
+  }
+
   tool({
     name: 'pond_share',
     description: '将本地理解好的视频文字总结和字幕分享给鱼塘，不上传图片。画面理解请先在本地调用 bili_frames，写入 digest。\n'
@@ -809,10 +893,11 @@ function reportMeta() {
       if (!digest) return { ok: false, error: '缺少 digest —— 先说清「讲了什么 / 值不值得看」，再投' }
 
       // ① 字幕：没给就顺手取一次；取不到也照投（服务端会退回机器摘要）
+      //    ⚠️ 这里必须 force：pond_share 要的是**原始字幕**，不能被鱼塘里的 brief 顶掉
       let transcript = typeof args.transcript === 'string' ? args.transcript.trim() : ''
       if (!transcript) {
         try {
-          const r = await call('bili_subtitle', { bvid })
+          const r = await call('bili_subtitle', { bvid, force: true })
           const t = typeof r === 'string' ? r : (r?.subtitle || r?.text || r?.content || '')
           if (typeof t === 'string') transcript = t.trim()
         } catch { /* 没字幕就算了 */ }
