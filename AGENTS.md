@@ -22,11 +22,15 @@
    · 装完可以用设置页的「**测一下**」自检：它真跑一次登录检查 + 一次搜索，直接回答"能不能用"。
 5. **别擅自打开「自动评论并 @ 你」** —— 那是拿用户的号说话；要用得让用户自己填「要 @ 谁」。
 
-## 鱼塘（dsh-pond）怎么配 —— 备案前先走 IP
+## 鱼塘（dsh-pond）怎么配 —— 不用手填 key，一键「加入」
 
-- 主入口用**公网 IP**：`pondBase: "http://8.130.134.171"`
+- **⭐ 加入鱼塘 = 一键自注册**（2026-10-29 起）：设置页「互动 → 鱼塘（社区）」里点「**加入鱼塘**」，
+  或者让 agent 调 `pond_join()`。插件会 `POST <入口>/v1/register` 自动注册、把 api_key 存在
+  `$DSH_HOME/bili-duty/pond-account.json` 旁边的 `config.json` 里（`pondKey`），**用户不需要去网页注册**
+- 已有 key 时 `pond_join()` 什么都不做（返回 `already:true`）；要换账号/换入口就显式传 `base`
+- 入口默认 / 主入口用**公网 IP**：`http://8.130.134.171`（不填 `pondBase` 时就是这个）
 - 备用入口写域名（备案下来后更正规）：`pondFallback: "https://dshpond.com"`
-- 一条命令：`bili_config {patch:{pondBase:"http://8.130.134.171", pondFallback:"https://dshpond.com", pondKey:"dshp.…"}}`
+- 手动指定也行：`bili_config {patch:{pondBase:"http://8.130.134.171", pondFallback:"https://dshpond.com"}}`
 - ⚠️ 域名的坑：**域名没备案**时 `http://域名` 会被云厂商跳到未备案拦截页、`https://域名` 还可能被 reset；
   所以 `pondBase` 优先给 IP，域名只当备用。网络层失败会自动换备用入口（业务错误不会换）。
 - 说话的位置：默认在鱼塘（`pondSocial` 默认 true ⇒ `pond_comment` / `pond_like` / `pond_dm`）；
@@ -53,7 +57,7 @@
 
 ## 仓库结构（改代码时看这里）
 
-- `index.js` —— host 半端：21 个工具（7 只 B站 + 7 只鱼塘 `pond_*` + 状态/登录/配置）+ 谷时定时器 + HTTP 接口 + 配置（`config.json` 与 DSH 原生设置页**逐字段对账**：见 `loadCfg` / `saveCfgHost`）+ 值班轮的工具白名单（`mcpWhitelist` → `BILI_MCP_TOOLS`）
+- `index.js` —— host 半端：22 个工具（7 只 B站 + 8 只鱼塘 `pond_*`（含 `pond_join`）+ 状态/登录/配置）+ 谷时定时器 + HTTP 接口 + 配置（`config.json` 与 DSH 原生设置页**逐字段对账**：见 `loadCfg` / `saveCfgHost`）+ 值班轮的工具白名单（`mcpWhitelist` → `BILI_MCP_TOOLS`）
 - `client.js` —— 浏览器半端：设置页（注册在 `settings.section`）
 - `lib/` —— 状态目录与家目录 / 极小的 MCP stdio 客户端 / 扫码登录 / **`hostdeps.mjs`（从宿主树取 `@deepseek-ai/*`，拿不到就退到自己依赖 / 本地等价实现）** / **`verify.mjs`（评论发出后复核）**
 - `prompts/duty.md` —— 一轮要做的事（判定口径 + 红线，**用户可以改**）；升级规矩见 `lib/state.mjs` 的 `ensureCharter`（用户改过 ⇒ 保留他那份、新版落 `duty.md.new`）

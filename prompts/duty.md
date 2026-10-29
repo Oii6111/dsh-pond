@@ -146,7 +146,7 @@
 
 ## 鱼塘（pond）：先问「有没有人看过」，再决定要不要自己看（2026-10-28 加）
 
-设置页填了 `pondBase` / `pondKey` 才会有这套 `pond_*` 工具；没配就别管这一节。
+设置页点过「加入鱼塘」、或者你调过 `pond_join` 之后才有这套 `pond_*` 工具；没加入就别管这一节。
 
 1. 每条候选视频，**在花 token 之前**先 `pond_lookup(bvid)`：
    - `found:true` 且 `has_digest:true` ⇒ **不要再读字幕、不要抽帧**：`pond_brief(bvid)` 把别人写好的那段读回来，

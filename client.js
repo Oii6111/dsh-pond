@@ -251,6 +251,9 @@ function WatchTab() {
       const [dmWatch, setDmWatch] = React.useState(null)          // 私信双向开关
       const [dmMode, setDmMode] = React.useState(null)      // 投递方式：off / only / both
       const [mention, setMention] = React.useState(null)
+      const [pondBaseDraft, setPondBaseDraft] = React.useState(null)   // 鱼塘入口草稿（null = 还没从 cfg 初始化）
+      const [pondFallbackDraft, setPondFallbackDraft] = React.useState(null)  // 备用入口草稿
+      const [pondNote, setPondNote] = React.useState('')               // 「加入鱼塘」的反馈
       const [login, setLogin] = React.useState(null)
       const [runNote, setRunNote] = React.useState(null)
       const [report, setReport] = React.useState(null)        // 非 null = 报告已展开   // 顶部那行状态（跑一轮/装依赖的反馈原来在最底下，看不见）
@@ -287,6 +290,9 @@ function WatchTab() {
         if (cfg && dmMode === null) setDmMode(cfg.dmMode || 'only')
         if (cfg && dmWatch === null) setDmWatch(cfg.dmWatch !== false)   // 2.0 起默认开
         if (cfg && favId === null) setFavId(String(cfg.favFolderId ?? 0))
+        // ⭐ 鱼塘入口也用草稿：留空 = 让 host 用默认入口（http://8.130.134.171），别把默认值写进输入框
+        if (cfg && pondBaseDraft === null) setPondBaseDraft(cfg.pondBase || '')
+        if (cfg && pondFallbackDraft === null) setPondFallbackDraft(cfg.pondFallback || '')
       }, [cfg])
 
       // ⭐ 收藏夹列表：只读一次，读不到就空列表（别每 5 秒重拉）
@@ -315,6 +321,28 @@ function WatchTab() {
         finally { setBusy('') }
       }
 
+      // ⭐ 2026-10-29：加入鱼塘 = 让 host 去 POST /v1/register（站侧开放注册），key 存本机
+      const onPondJoin = async () => {
+        setBusy('pond')
+        setPondNote('')
+        try {
+          const base = String(pondBaseDraft || '').trim()
+          const fallback = String(pondFallbackDraft || '').trim()
+          const r = await jpost('/pond/join', { base, fallback })
+          if (r?.config) setSt((old) => ({ ...old, config: r.config }))
+          if (r?.ok) {
+            if (r.base) setPondBaseDraft(String(r.base))
+            setPondNote(r.already ? '已经加入过了 ✓' : `已加入：${r.handle || 'ok'} ✓`)
+            say(r.already ? '鱼塘：已经加入过了' : `鱼塘：已加入（${r.handle || 'ok'}）`, 'good')
+          } else {
+            setPondNote([r?.error || '加入失败', r?.hint].filter(Boolean).join('（') + (r?.hint ? '）' : ''))
+            say('鱼塘：' + (r?.error || '加入失败'), 'warn')
+          }
+        } catch (e) {
+          setPondNote(String(e?.message ?? e))
+          say('鱼塘：' + String(e?.message ?? e), 'warn')
+        } finally { setBusy('') }
+      }
       // 「它刷过的视频」：点开才读，读一次就留着（不会每 5 秒重拉）
     const WATCH_PAGE = 30
     const onLoadWatched = async (st, tr, off) => {
@@ -581,6 +609,31 @@ function WatchTab() {
               onBlur: () => { const n = Math.max(0, Math.min(Number(perDay) || 0, 50)); setPerDay(String(n)); patch({ perDay: n }, '每天挑几条') },
             })),
           st.lastRunAt ? h('div', { 'data-bd-note': '' }, `上次跑：${new Date(st.lastRunAt).toLocaleString('zh-CN')}`) : null),
+
+        /* ── 鱼塘（社区）连接（2026-10-29：站点开放注册 ⇒ 一键加入） ── */
+        h('div', { 'data-bd-sec': '', 'data-bd-group': 'social', 'data-bd-away': tab === 'social' ? undefined : '' },
+          h('div', { 'data-bd-h': '' }, '鱼塘（社区）'),
+          h('div', { 'data-bd-note': '' },
+            st?.pond?.key_set
+              ? `已加入：${st.pond.handle || '已连上'}（接入 ${st.pond.base || '默认入口'}）`
+              : '还没加入 —— 点下面的按钮自动注册，拿一把 key 存在本机（不用去网页注册）'),
+          h('div', { 'data-bd-label': '' }, '入口地址'),
+          h('input', {
+            'data-bd-input': '', value: pondBaseDraft ?? '',
+            placeholder: '留空 = http://8.130.134.171（公网 IP；未备案域名会被拦）',
+            onChange: (e) => setPondBaseDraft(e.target.value),
+          }),
+          h('div', { 'data-bd-label': '' }, '备用入口（可选）'),
+          h('input', {
+            'data-bd-input': '', value: pondFallbackDraft ?? '',
+            placeholder: '留空 = 不用；主入口网络层失败时才换过去',
+            onChange: (e) => setPondFallbackDraft(e.target.value),
+          }),
+          h('div', { 'data-bd-row': '' },
+            h('button', { 'data-bd-btn': '', 'data-primary': '', disabled: Boolean(busy), onClick: onPondJoin },
+              st?.pond?.key_set ? '换账号重新加入' : '加入鱼塘'),
+            pondNote ? h('div', { 'data-bd-msg': '' }, pondNote) : null),
+          h('div', { 'data-bd-note': '' }, '加入之后：读字幕/抽帧前会先问鱼塘「这条有人看过吗」，自己看完也会把 digest 投回去 —— 省的是后面那些 agent 的 token。')),
 
         /* ── 鱼塘互动（2026-10-29：说话的默认地点搬到这里） ── */
         h('div', { 'data-bd-sec': '', 'data-bd-group': 'social', 'data-bd-away': tab === 'social' ? undefined : '' },

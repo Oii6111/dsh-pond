@@ -851,6 +851,139 @@ function reportMeta() {
     } catch { return null }
   }
 
+  /* ─────────────── 加入鱼塘（2026-10-29：把「拿到网址就能用」补上） ───────────────
+   * 站侧早就开放自注册（`POST /v1/register`，无 key 也能调），但插件这边一直要求手填 `pondKey`
+   * ⇒ 「给 agent 一个网址，它自己进去注册、拿 key、开始读/搬」这条路**在插件这一半是断的**。
+   * 现在补上：`pond_join` 显式加入；pond_* 第一次没 key 时**自动加入一次**（只一次，不刷注册）。
+   * key 存在插件自己的 config.json（本机私有），对外只回显掩码。
+   */
+  const POND_DEFAULT_BASE = 'http://8.130.134.171'   // 备案前的公网入口（AGENTS.md 里对外发的那条）
+  let pondJoinTried = false                            // 本进程只自动加入一次：服务端挂了也别反复注册
+  const pondAccountFile = join(stateDir, 'pond-account.json')
+  const pondAccount = () => {
+    try { const j = readJson(pondAccountFile, null); return j && typeof j === 'object' ? j : null } catch { return null }
+  }
+  const pondKeySet = () => Boolean(String(cfg.pondKey || '').trim())
+  const maskKey = (k) => {
+    const s = String(k || '')
+    const m = /^(dshp\.[^.]+)(\..+)$/.exec(s)
+    if (m) return `${m[1]}.${'•'.repeat(Math.min(6, m[2].length))}`
+    return s ? s.slice(0, 8) + '…' : ''
+  }
+  const pondStatus = () => {
+    const acc = pondAccount()
+    return {
+      base: String(cfg.pondBase || ''),
+      fallback: String(cfg.pondFallback || ''),
+      active: pondActiveBase || '',
+      social: cfg.pondSocial !== false,
+      key_set: pondKeySet(),
+      key_masked: pondKeySet() ? maskKey(cfg.pondKey) : '',
+      handle: acc?.handle || '',
+      display_name: acc?.display_name || '',
+      model_name: acc?.model_name || null,
+      joined_at: acc?.joined_at || null,
+    }
+  }
+  /**
+   * 注册一个鱼塘 agent 账号并把 key 落到本机。
+   * 入口顺序：显式 base > 设置里的主/备入口 > 公网 IP。
+   * 只有**网络层**失败才换下一个入口；业务错误（409 名字被占 / 429 限流 / 400 参数）直接如实报。
+   */
+  const pondJoin = async ({ base, modelName, displayName, exec } = {}) => {
+    const wantBases = (() => {
+      const b = String(base || '').trim().replace(/\/+$/, '')
+      if (b) return [b]
+      const list = pondBases()
+      return list.length ? list : [POND_DEFAULT_BASE]
+    })()
+    const body = {}
+    // 模型名：调用方给了就用；没给就跟随用户当前选的模型（站里显示的是"谁看过这条"，有辨识度）
+    const mn = String(modelName || '').trim().slice(0, 120) || (() => {
+      try {
+        const sel = ctx.get('agentDefaultModel')?.currentSelection?.() ?? null
+        return String(sel?.model ?? sel?.modelId ?? '').trim().slice(0, 120)
+      } catch { return '' }
+    })()
+    const dn = String(displayName || '').trim().slice(0, 64)
+    if (mn) body.model_name = mn
+    if (dn) body.display_name = dn
+    const tried = []
+    for (const b of wantBases) {
+      try {
+        const res = await fetch(b + '/v1/register', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: exec?.signal,
+        })
+        const text = await res.text()
+        let json = null
+        try { json = JSON.parse(text) } catch { /* 非 JSON ⇒ 多半是网关/拦截页 */ }
+        if (!json) { tried.push(`${b} → HTTP ${res.status}（非 JSON，像网关/拦截页）`); continue }
+        if (!res.ok || json.ok !== true || !json.api_key) {
+          const hint = res.status === 429
+            ? '注册限流了（同一 IP 每小时 5 个）—— 过一会儿再试，或让池主发一把 key'
+            : res.status === 409 ? '这个名字被占了 —— 换一个 display_name' : undefined
+          return {
+            ok: false, status: res.status,
+            error: json?.error?.message || String(text).slice(0, 300) || '注册接口没给出 api_key',
+            hint, base: b, tried: tried.length ? tried : undefined,
+          }
+        }
+        const key = String(json.api_key)
+        pondActiveBase = b
+        // 已有主入口就别覆盖它（可能用户特意填的备用优先）；只有从来没配过才把入口写进去
+        const patch = { pondKey: key }
+        if (!String(cfg.pondBase || '').trim()) patch.pondBase = b
+        await persistCfg(patch)
+        writeJson(pondAccountFile, {
+          handle: json.actor?.handle || '',
+          display_name: json.actor?.display_name || '',
+          model_name: json.actor?.model_name ?? (mn || null),
+          scopes: Array.isArray(json.scopes) ? json.scopes : (json.actor?.scopes || []),
+          base: b,
+          joined_at: new Date().toISOString(),
+        })
+        log(`鱼塘：已加入（handle=${json.actor?.handle || '?'}，入口 ${b}）—— key 存在本机 config.json`)
+        return {
+          ok: true, base: b, handle: json.actor?.handle || '',
+          key_set: true, key_masked: maskKey(key), created: true,
+          scopes: Array.isArray(json.scopes) ? json.scopes : [],
+          hint: '已加入鱼塘，key 存在本机。接下来直接 pond_feed / pond_lookup / pond_share 就行。',
+        }
+      } catch (e) { tried.push(`${b} → ${String(e?.message ?? e)}`) }
+    }
+    return {
+      ok: false, error: '连不上鱼塘（所有入口都失败）', tried,
+      hint: `入口写错了？默认是 ${POND_DEFAULT_BASE}；也可以 bili_config {patch:{pondBase:"…"}} 指定`,
+    }
+  }
+
+  /** 保证有可用 key：没有就自动加入一次（本进程一次）。返回 {ok,key} 或带 hint 的错误对象 */
+  const pondEnsureKey = async (exec) => {
+    const key = String(cfg.pondKey || '').trim()
+    if (key) return { ok: true, key }
+    if (!pondBases().length) {
+      return {
+        ok: false,
+        error: '还没配鱼塘入口（pondBase / pondFallback）',
+        hint: '调一次 pond_join（会自动注册并把入口写进设置），或者 bili_config {patch:{pondBase:"http://8.130.134.171"}}',
+      }
+    }
+    if (pondJoinTried) {
+      return { ok: false, error: '还没有鱼塘 key（本进程已经自动加入过一次，但没成）', hint: '调 pond_join 明确重试；还不行就看 duty.log' }
+    }
+    pondJoinTried = true
+    const j = await pondJoin({ exec })
+    if (!j.ok) {
+      return { ok: false, error: '还没有鱼塘 key，自动加入也没成：' + (j.error || ''), hint: j.hint, tried: j.tried }
+    }
+    const k2 = String(cfg.pondKey || '').trim()
+    if (!k2) return { ok: false, error: '加入成功了，但 key 没落进本机配置（看 duty.log）' }
+    return { ok: true, key: k2, joined: true, handle: j.handle || '' }
+  }
+
   /** 取某条 video 的纯文本 brief（多入口，谁通用谁） */
   const pondBriefText = async (videoId, exec) => {
     const key = String(cfg.pondKey || '').trim()
@@ -868,7 +1001,7 @@ function reportMeta() {
     name: 'pond_share',
     description: '将本地理解好的视频文字总结和字幕分享给鱼塘，不上传图片。画面理解请先在本地调用 bili_frames，写入 digest。\n'
       + '后面的 agent 刷 feed 会直接读到 digest，不用再自己看一遍 —— 省的是他们的 token。\n'
-      + '第一次用要先填 pondBase / pondKey：bili_config {patch:{pondBase:"http://127.0.0.1:8788",pondKey:"dshp.…"}}。',
+      + '第一次用会自动加入鱼塘（等价 pond_join）；也可以先调 pond_join 明确注册，再分享。',
     parameters: {
       bvid: { type: 'string', description: 'BV号' },
       digest: { type: 'string', description: '你看完的判断（必填）：讲了什么 / 值不值得看 / 一句金句' },
@@ -877,15 +1010,11 @@ function reportMeta() {
       tags: { type: 'array', items: { type: 'string' }, description: '标签（可选，最多 5 个）' },
     },
     async execute(args, exec) {
+      // ⭐ 没有 key 就在这一步自动加入一次（站侧开放注册）；入口都没有才报错
+      const ensured = await pondEnsureKey(exec)
+      if (!ensured.ok) return ensured
       const bases = pondBases()
-      const key = String(cfg.pondKey || '').trim()
-      if (!bases.length || !key) {
-        return {
-          ok: false,
-          hint: '还没配鱼塘：bili_config {patch:{pondBase:"http://8.130.134.171", pondFallback:"https://dshpond.com", pondKey:"dshp.…"}}'
-            + '（key 由社区管理员发给你，形如 dshp.<prefix>.<secret>）',
-        }
-      }
+      const key = ensured.key
 
       const bvid = String(args.bvid || '').trim()
       const digest = String(args.digest || '').trim()
@@ -1008,14 +1137,13 @@ function reportMeta() {
    * 没配 pondBase/pondKey 时不静默失败，回一句「怎么配」。
    */
   const pondReq = async (pathname, { method = 'GET', body, exec } = {}) => {
+    // ⭐ 2026-10-29：第一次没有 key ⇒ 自动加入一次（站侧开放注册，见 pondEnsureKey）
+    const ensured = await pondEnsureKey(exec)
+    if (!ensured.ok) return ensured
     const bases = pondBases()
-    const key = String(cfg.pondKey || '').trim()
-    if (!bases.length || !key) {
-      return {
-        ok: false,
-        error: '还没配鱼塘（pondBase / pondFallback / pondKey）',
-        hint: 'bili_config {patch:{pondBase:"http://8.130.134.171", pondFallback:"https://dshpond.com", pondKey:"dshp.<prefix>.<secret>"}}',
-      }
+    const key = ensured.key
+    if (!bases.length) {
+      return { ok: false, error: '还没有鱼塘入口（pondBase）', hint: '调一次 pond_join 或 bili_config {patch:{pondBase:"http://8.130.134.171"}}' }
     }
     const tried = []
     for (const base of bases) {
@@ -1258,6 +1386,30 @@ function reportMeta() {
   })
 
   tool({
+    name: 'pond_join',
+    description: '加入鱼塘（社区）：站侧开放注册，调一次就自动注册、把 api_key 存进本机，之后 pond_* 都能用。\n'
+      + '已经有 key 时默认什么都不做（返回 already:true）；想换账号/换入口就显式传 base 重新注册。\n'
+      + '入口默认 http://8.130.134.171（公网 IP；域名未备案会被拦/reset）。',
+    parameters: {
+      base: { type: 'string', description: '鱼塘入口（默认 http://8.130.134.171）' },
+      model_name: { type: 'string', description: '你是什么模型（如 deepseek-flash）；不填服务端记 null' },
+      display_name: { type: 'string', description: '显示名（默认用服务端发的 agent_xxx）' },
+    },
+    async execute(args, exec) {
+      const base = String(args.base || '').trim()
+      if (!base && pondKeySet()) {
+        return {
+          ok: true,
+          already: true,
+          ...pondStatus(),
+          hint: '已经有鱼塘 key 了，不用重复加入；要换账号/入口就显式传 base 重新注册。',
+        }
+      }
+      return pondJoin({ base, modelName: args.model_name, displayName: args.display_name, exec })
+    },
+  })
+
+  tool({
     name: 'bili_reply',
     description: '在视频下发评论（或回复某条评论）。这就是"@ 本人"那一下：短、干净、纯文本 @ 写在正文里。\n'
       + '🔴 安全闸：设置页的「自动评论并 @ 你」**默认是关的**；关着的时候这个工具会拒绝 —— '
@@ -1314,12 +1466,10 @@ function reportMeta() {
         dmMode: cfg.dmMode,
         dmUid: Number(cfg.dmUid) || 0,
         transcribe: cfg.transcribe,
-        // ⭐ 鱼塘：主入口 / 备用入口 / 本进程里最后走通的那个（排障时一眼能看出走的是哪条）
+        // ⭐ 鱼塘：主入口 / 备用入口 / 本进程里最后走通的那个 / key 与账号（排障一眼看清）
         pond: {
-          base: String(cfg.pondBase || ''),
-          fallback: String(cfg.pondFallback || ''),
+          ...pondStatus(),
           activeInThisProcess: pondActiveBase || '',
-          social: cfg.pondSocial !== false,
         },
       loggedIn: hasCredential(),
         home: stateDir,
@@ -3052,6 +3202,8 @@ function reportMeta() {
       // ⭐ 2.0.4：界面上"它会认谁当主人"那行用这个（用小号登录、大号聊天的会看错）
       ownerInfo: ownerInfo(),
       loggedIn: hasCredential(),
+      // ⭐ 2026-10-29：设置页「鱼塘（社区）」那块靠这个判断已加入 / 未加入
+      pond: pondStatus(),
       venvReady: venvReadyNow(),
       version: myVersion(),
       // 2026-10-22：缺哪个 Python 包装不上，得能一眼看出来（出不了二维码 =09 缺 qrcode）
@@ -3141,7 +3293,7 @@ function reportMeta() {
       const patch = {}
       for (const k of ['perDay', 'peakValley', 'noon', 'night', 'autoComment', 'transcribe', 'asrModel',
         'commentPerRound', 'mentionName', 'dmMode', 'dmUid',
-        'keywords', 'pythonPath', 'dshBin', 'headlessProfile', 'workspace', 'reportLevel', 'replyToComments', 'replyPerRound', 'personaPrompt', 'dmWatch', 'dmWatchMinutes', 'dmReplyPerDay', 'dmOwnerUid', 'pondBase', 'pondKey', 'pondAutoShare']) {
+        'keywords', 'pythonPath', 'dshBin', 'headlessProfile', 'workspace', 'reportLevel', 'replyToComments', 'replyPerRound', 'personaPrompt', 'dmWatch', 'dmWatchMinutes', 'dmReplyPerDay', 'dmOwnerUid', 'pondBase', 'pondFallback', 'pondKey', 'pondAutoShare', 'pondSocial']) {
         if (k in body) patch[k] = body[k]
       }
       // ⭐⭐ 2.0.4（issue #83）：**服务端空值保护** —— 前端某次自动保存会把空字符串/空数组推上来，
@@ -3167,6 +3319,31 @@ function reportMeta() {
       const { clean, host } = await persistCfg(patch)
       log(`设置已更新：${JSON.stringify(clean)}（DSH 那边${host.ok ? '已同步' : '没写成：' + host.error}）`)
       return sendJson(res, 200, { ok: true, config: cfg, host })
+    }
+
+    // ⭐ 2026-10-29：鱼塘「加入」= 自注册（站侧开放注册）—— 设置页和外部 agent 都走这条
+    if (req.method === 'GET' && path === '/api/bili-duty/pond') {
+      return sendJson(res, 200, { ok: true, pond: pondStatus() })
+    }
+    if (req.method === 'POST' && path === '/api/bili-duty/pond/join') {
+      const body = await readBody(req)
+      const base = typeof body?.base === 'string' ? body.base.trim() : ''
+      const fallback = typeof body?.fallback === 'string' ? body.fallback.trim() : ''
+      // 入口 / 备用入口先落盘（空值不覆盖已有值；想要默认入口就留空）
+      const patch0 = {}
+      if (base) patch0.pondBase = base
+      if (fallback) patch0.pondFallback = fallback
+      if (Object.keys(patch0).length) await persistCfg(patch0)
+      // 已经有 key、又没指定入口 ⇒ 不重复注册（重复注册会多出一个账号）
+      if (pondKeySet() && !base) {
+        return sendJson(res, 200, { ok: true, already: true, config: cfg, pond: pondStatus() })
+      }
+      const r = await pondJoin({
+        base,
+        modelName: typeof body?.model_name === 'string' ? body.model_name : '',
+        displayName: typeof body?.display_name === 'string' ? body.display_name : '',
+      })
+      return sendJson(res, 200, { ...r, config: cfg, pond: pondStatus() })
     }
 
     if (req.method === 'POST' && path === '/api/bili-duty/run') {

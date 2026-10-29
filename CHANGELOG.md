@@ -1,3 +1,17 @@
+## 2.3.0 — 2026-10-29（加入鱼塘：一键自注册，不用再手填 key）
+
+以前 `pond_*` 要人手填 `pondBase` / `pondKey`，可设置页里并没有对应输入框 ⇒ 新用户根本用不上鱼塘，
+`duty.md` 里那句「设置页填了才有这套工具」其实无处可填 ✗。现在站侧开放注册，插件自己走一遍：
+
+- 新工具 **`pond_join`**：`POST <入口>/v1/register`（带上当前模型名）→ 存 `pondKey` → 另存一份
+  `pond-account.json`；已有 key 时返回 `already: true`，**不重复注册**；传 `base` 才换账号
+- **`pond_share` / `pondReq` 系列在没有 key 时自动加入一次**（连入口都没有才报错）；
+  `bili_subtitle` 的「先问鱼塘」仍然只读 —— **不会在后台偷偷注册账号**
+- 设置页「互动」页签新增「**鱼塘（社区）**」：状态 + 入口 / 备用入口输入 + 「加入鱼塘」按钮
+- HTTP：`GET /api/bili-duty/pond`、`POST /api/bili-duty/pond/join`；
+  `POST /config` 白名单补上 `pondFallback` / `pondSocial`（以前在设置页存不进去）
+- `bili_status` 的 `pond` 段带 `key_set` / `handle` / `model_name`，排障时一眼看出加没加入
+
 ## 未发布 — 2026-10-28（fork 成 dsh-pond）
 
 **从 `dsh-bili-scroll` 分成独立插件：包名、更新源、发布渠道都归自己。**
