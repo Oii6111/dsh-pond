@@ -133,6 +133,12 @@ export const Config = !z ? undefined : z.object({
    * 关掉 ⇒ 鱼塘只读（lookup / brief / inbox），想说话只能回 B站（autoComment 那套）。
    */
   pondSocial: z.boolean().default(true).extra('volatile', true),
+  /**
+   * ⭐ 2026-11-06：**每天两轮怎么排**。默认 `bili,pond` ——
+   *   第一轮（中午窗口）刷 B站、把值得的投进鱼塘；第二轮（夜间窗口）**不碰 B站**，直接刷鱼塘做讨论和交流。
+   * 想只跑一种就写 `bili` 或 `pond`；`bili,bili` 就是两轮都刷 B站。
+   */
+  roundPlan: z.string().default('bili,pond').extra('volatile', true),
 })
 
 /**
@@ -272,7 +278,7 @@ function reportMeta() {
     perDay: 5, peakValley: false, noon: true, night: true, autoComment: false, transcribe: false, asrModel: 'small',
     dmMode: 'only', dmUid: 0,
     keywords: [], commentPerRound: 1, mentionName: '', pythonPath: 'python', dshBin: '', headlessProfile: 'headless', overlayMcp: true, workspace: '', reportLevel: 'full', replyToComments: false, replyPerRound: 1, favFolderId: 0,
-    pondBase: '', pondFallback: '', pondKey: '', pondAutoShare: false, pondSocial: true,
+    pondBase: '', pondFallback: '', pondKey: '', pondAutoShare: false, pondSocial: true, roundPlan: 'bili,pond',
   }
   const normalize = (src, base) => {
     const out = { ...base }
@@ -319,6 +325,14 @@ function reportMeta() {
     if ('replyToComments' in p) p.replyToComments = Boolean(p.replyToComments)
     if ('replyPerRound' in p) p.replyPerRound = Math.max(1, Math.min(Number(p.replyPerRound) || 1, 10))
     if ('favFolderId' in p) p.favFolderId = Math.max(0, Math.floor(Number(p.favFolderId) || 0))
+    if ('roundPlan' in p) {
+      const parts = String(p.roundPlan || '')
+        .split(/[,\s]+/)
+        .map((s) => s.trim().toLowerCase())
+        .filter((s) => s === 'bili' || s === 'pond')
+        .slice(0, 4)
+      p.roundPlan = parts.length ? parts.join(',') : 'bili,pond'
+    }
     if ('commentPerRound' in p) p.commentPerRound = Math.max(0, Math.min(Number(p.commentPerRound) || 0, 20))
     if ('pondBase' in p) p.pondBase = String(p.pondBase || '').trim().replace(/\/+$/, '').slice(0, 300)
     if ('pondFallback' in p) {
@@ -1471,6 +1485,9 @@ function reportMeta() {
           ...pondStatus(),
           activeInThisProcess: pondActiveBase || '',
         },
+        // ⭐ 2026-11-06：一天两轮怎么排（默认 bili,pond：中午刷 B站、夜间刷鱼塘）
+        roundPlan: String(cfg.roundPlan || 'bili,pond'),
+        lastRound: st.lastKind || null,
       loggedIn: hasCredential(),
         home: stateDir,
         report: join(outDir, `${dayKey(now)}.md`),
@@ -1805,7 +1822,7 @@ function reportMeta() {
     } catch (e) { log('查私信 UID 出错：' + String(e?.message ?? e)); return 0 }
   }
 
-  const promptFor = () => {
+  const promptFor = (kind = 'bili') => {
     // ⭐ 章程取哪一份：家里那份优先（ensureCharter 保证铺好；他改过的话就是他那份，升级的事由 ensureCharter 记账处理）
     const duty = charterPath(pluginDir, stateDir)
     // ⭐ 2026-10-19（issue #36）：这里以前是**在路径字符串上**做 split('<家目录>') —— 空操作 ✗
@@ -1894,7 +1911,12 @@ function reportMeta() {
     const dmOn = Boolean(dmModeEff !== "off" && dmUidEff > 0)
     // ⭐ 2026-10-29：说话的默认地点 = 鱼塘（pondSocial 默认开）。这一行每轮都会进提示词，别让它变成脏数据。
     const pondToolsOn = Boolean(String(cfg.pondBase || '').trim() && String(cfg.pondKey || '').trim() && cfg.pondSocial !== false)
-    return `你是这个账号的 B站 助手。`
+    return (kind === 'pond'
+      ? `你是这个账号的助手。⭐⭐ **这一轮是「鱼塘轮」：不刷 B站，直接刷鱼塘** —— `
+        + `用 \`pond_feed\` 看池子里最近有什么、\`pond_brief\` 读感兴趣的那几条（别再自己去看 B站）、`
+        + `用 \`pond_comment\` / \`pond_like\` / \`pond_dm\` 参与讨论，\`pond_inbox\` 看有没有人找你。`
+        + `目标不是"投新视频"，是**把池子聊起来**：挑 1–3 条值得回应的，说具体的话（别客套）。\n`
+      : `你是这个账号的 B站 助手。`)
       + (pondToolsOn
         ? `⭐⭐ **这一轮你说话的地方是「鱼塘」，不是 B站**：想评论/点赞用 \`pond_comment(bvid, body)\` / \`pond_like(bvid)\`，`
           + `想私聊某个 agent 用 \`pond_dm(handle, body)\`、\`pond_inbox()\` 看有没有人找你 —— 一轮最多 3 次写动作。`
@@ -2023,8 +2045,8 @@ function reportMeta() {
     //    评论/点赞跟随 autoComment（dmOnly 时连评论都关，跟 bili_reply 一致），私信跟随 dmMode/dmWatch。
     const pondReady = Boolean(String(cfg.pondBase || '').trim() && String(cfg.pondKey || '').trim())
     if (pondReady) {
-      list.push('pond_lookup', 'pond_brief', 'pond_inbox')
-      // ⭐ 2026-10-29：说话的默认地点在鱼塘 —— 评论 / 点赞 / 私聊都放（pondSocial 默认开）
+      // pond_feed 只读、极便宜 —— 鱼塘轮（不刷 B站那一轮）就靠它看池子里有什么
+      list.push('pond_feed', 'pond_lookup', 'pond_brief', 'pond_inbox')
       if (cfg.pondSocial !== false) list.push('pond_comment', 'pond_like', 'pond_dm')
     }
     return list
@@ -2269,7 +2291,7 @@ function reportMeta() {
 
   let dutyChild = null
   let dutyStartedAt = 0
-  const runDuty = (why = 'window') => {
+  const runDuty = (why = 'window', kind = 'bili') => {
    try {
       if (dutyChild) {
         const alive = dutyChild.exitCode === null && !dutyChild.killed
@@ -2293,7 +2315,7 @@ function reportMeta() {
     const overlay = ensureOverlay()
       const args = [...dsh.args, '--profile', effectiveProfile()]
     if (overlay) args.push('--patch', overlay)
-    args.push(promptFor())
+    args.push(promptFor(kind))
     // ⭐ 这一轮的工作目录 = 使用者（或别的用户）的**工作区** —— 只有这样它的 `AGENTS.md` 才会自动加载。
     // ⭐ 工作目录 = **插件家**：那一轮**被沙箱关着**，只写得了自己工作目录里的东西 ✗
     //    （2026-10-14 教训：为了让它读工作区里的 AGENTS.md 把 cwd 改成工作区 ⇒
@@ -2381,17 +2403,40 @@ function reportMeta() {
       const now = new Date()
       const st = readJson(dutyStateFile, {})
       const today = dayKey(now)
-      // ⭐ 闸门看的是「今天已经**挑到几条**」（从今天的报告里数出来），不是「跑了几轮」
-      if (countPickedToday(now) >= Number(cfg.perDay || 0)) return
-      // ⭐ 「不写日报」那档没有报告可数 ⇒ 数不出条数就保守一点：一天只跑一轮
-      if (String(cfg.reportLevel || 'full') === 'off' && roundsToday(now) >= 1) return
-      for (const k of ['noon', 'night']) {
-        if (!cfg[k]) continue
+      /**
+       * ⭐ 2026-11-06：**一天两轮，一轮刷 B站、一轮刷鱼塘**。
+       * roundPlan 默认 'bili,pond'，按开启的窗口顺序（中午 → 夜间）分配：
+       *   中午 = 刷 B站（找新的、读、投进鱼塘）；夜间 = 不碰 B站，直接刷鱼塘讨论交流。
+       * 两种轮的闸门不一样：bili 轮看「今天挑满没」，pond 轮只看「这个窗口跑过没」。
+       */
+      const plan = String(cfg.roundPlan || 'bili,pond')
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter((s) => s === 'bili' || s === 'pond')
+      const windowsOn = ['noon', 'night'].filter((k) => cfg[k])
+      const pondReadyForRound = Boolean(String(cfg.pondBase || '').trim() && String(cfg.pondKey || '').trim())
+      for (let i = 0; i < windowsOn.length; i++) {
+        const k = windowsOn[i]
         if (!inWindow(now, WINDOWS[k])) continue
         const key = `${today}:${k}`
         if (st.windows?.[key]) continue
-        bumpState({ windows: { ...(st.windows || {}), [key]: true }, count: roundsToday(now) + 1, lastRunAt: now.toISOString(), lastWhy: k })
-        runDuty(`window:${k}`)
+        const kind = plan[i] ?? plan[plan.length - 1] ?? 'bili'
+        // 鱼塘没配就别开鱼塘轮（开也只会空跑一轮）
+        if (kind === 'pond' && !pondReadyForRound) continue
+        if (kind === 'bili') {
+          // 闸门看的是「今天已经**挑到几条**」（从今天的报告里数出来），不是「跑了几轮」
+          if (countPickedToday(now) >= Number(cfg.perDay || 0)) continue
+          // 「不写日报」那档没有报告可数 ⇒ 数不出条数就保守一点：一天只跑一轮
+          if (String(cfg.reportLevel || 'full') === 'off' && roundsToday(now) >= 1) continue
+        }
+        bumpState({
+          windows: { ...(st.windows || {}), [key]: true },
+          count: roundsToday(now) + 1,
+          lastRunAt: now.toISOString(),
+          lastWhy: `${k}:${kind}`,
+          lastKind: kind,
+        })
+        runDuty(`window:${k}:${kind}`, kind)
         return
       }
     } catch (e) {

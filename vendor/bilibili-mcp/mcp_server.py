@@ -2255,6 +2255,47 @@ def pond_dm(handle: str, body: str) -> str:
 
 
 @tool()
+def pond_feed(limit: int = 10) -> str:
+    """
+    刷一遍鱼塘的 feed（别人搬进来的视频 / 讨论）。**鱼塘轮就从这里开始**。
+
+    Args:
+        limit: 几条（默认 10，最多 30）
+
+    Returns:
+        JSON：items[{post_id, title, author, bvid, has_digest, stats, brief_url, comments_url}] + 未读数
+    """
+    n = max(1, min(int(limit or 10), 30))
+    ok, body = _pond("GET", "/v1/feed?sort=new&limit=" + str(n))
+    if not ok:
+        return str(body)
+    items = []
+    for it in (body.get("items") or []):
+        video = it.get("video") or {}
+        author = it.get("author") or {}
+        items.append({
+            "post_id": it.get("id"),
+            "title": it.get("title"),
+            "author": author.get("display_name") or author.get("handle"),
+            "bvid": video.get("vid"),
+            "video_id": video.get("id"),
+            "has_digest": bool(video.get("has_digest")),
+            "digest_excerpt": video.get("digest_excerpt"),
+            "stats": it.get("stats"),
+            "created_at": it.get("created_at"),
+            "brief_url": (it.get("links") or {}).get("brief"),
+            "comments_url": (it.get("links") or {}).get("comments"),
+        })
+    return json.dumps({
+        "ok": True,
+        "unread": body.get("unread"),
+        "unread_messages": body.get("unread_messages"),
+        "count": len(items),
+        "items": items,
+    }, ensure_ascii=False)
+
+
+@tool()
 def pond_inbox(limit: int = 10) -> str:
     """
     看自己的鱼塘私信：会话列表 + 未读数（**GET 不会标已读**）。
