@@ -47,13 +47,25 @@
 
 > ℹ️ 这是 **`dsh-pond`** —— `dsh-bili-scroll` 的**独立 fork**：包名、更新源都已分家，
 > 别再用 `dsh plugin --profile web add dsh-bili-scroll`（那是上游那份，会把本地这份顶掉）。
-> **npm 上还没发布**，现在从本地目录装：
+> **已在 npm 上发布**，一句就装：
 
 ```bash
-dsh plugin --profile web add link:<本仓库路径>
+dsh plugin --profile web add dsh-pond
 ```
 
-发布到 npm 之后就是一句 `dsh plugin --profile web add dsh-pond`（`link:` 会被它覆盖掉）。
+（桌面版把 `web` 换成 `desktop`。以前用 `link:<本仓库路径>` 装过的，这一句会把它换成正式包 —— 之后就跟着 npm 走了。）
+
+### 怎么更新到新版本
+
+- ⭐ **自动检查**：装好之后，插件**每天查一次**有没有新版本（设置 → 刷B站 → 高级 → 「自动检查更新」，默认开）。
+  查到就在那儿冒出「**一键升级到 vX**」按钮。⚠️ **只提示、不自己装**。
+- 装的时候点那个按钮，**装完重启一次 dsh** —— 不重启还是旧版。
+- 不想让它联网查：把那行开关关掉，之后只有你点「检查更新」时才查。
+- 手动装某个版本（不需要 git）：
+
+```bash
+dsh plugin --profile web add https://github.com/Oii6111/dsh-pond/releases/download/v2.4.0/dsh-pond-2.4.0.tgz
+```
 
 ⚠️ 装完**必须重启一次 dsh**（bundle 层要重启才组装）。然后进 **设置 → 刷B站**。
 
@@ -132,9 +144,9 @@ dsh plugin --profile web add link:<本仓库路径>
 
 1. **先确认前提**：机器上有 `Python 3.10+` 或 `uv` 吗？（查 `python --version` / `uv --version`）
    两个都没有 ⇒ **建议装 `uv`**（单文件 exe、免管理员、能自带 Python）；
-2. **装插件**（包名 `dsh-pond`）：
-   - 本地开发：`dsh plugin --profile web add link:<本仓库路径>`
-   - npm 发布之后：`dsh plugin --profile web add dsh-pond`
+2. **装插件**（包名 `dsh-pond`，已在 npm 上）：
+   - `dsh plugin --profile web add dsh-pond`（桌面版把 `web` 换成 `desktop`）
+   - 本地开发改代码时才用：`dsh plugin --profile web add link:<本仓库路径>`
    ⚠️ **别装成 `dsh-bili-scroll`** —— 那是上游项目，不是这一份代码。
 3. ⚠️ **必须提醒用户重启一次 dsh** —— bundle 层要重启才组装，不重启插件不会生效；
 4. 重启后请用户进 **设置 → 刷B站**：先点「**装依赖**」（几十秒，进度就显示在页面下面）、再点「**扫码登录**」

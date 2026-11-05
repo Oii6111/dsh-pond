@@ -50,7 +50,10 @@ export const inject = ['webServer', 'tools', 'settings']
  *      设置页槽位 id（bili-scroll）一律不动，免得用户已有的登录与配置失效。
  */
 export const PKG_NAME = 'dsh-pond'
-export const GH_REPO = ''
+// ⭐ 2026-11-06：填上自己的 GitHub 仓 —— 「检查更新」会**同时问 npm 和这里**，谁新用谁。
+//   用途：npm 那边掉线 / 还没发上去时，GitHub 上的 version 仍是可靠的第二来源；
+//   升级时优先取 Release 里的 tgz 直链（https，不需要机器上装 git）。
+export const GH_REPO = 'Oii6111/dsh-pond'
 
 /**
  * 🔴 每个字段都要 `.extra('volatile', true)`：DSH 的 settings.update() 只认 volatile 字段
@@ -139,6 +142,12 @@ export const Config = !z ? undefined : z.object({
    * 想只跑一种就写 `bili` 或 `pond`；`bili,bili` 就是两轮都刷 B站。
    */
   roundPlan: z.string().default('bili,pond').extra('volatile', true),
+  /**
+   * ⭐ 2026-11-06：**自动检查更新**（默认开）。后台每天查一次版本号 —— **只查、不装**。
+   *   关掉 ⇒ 退回老行为：只有你点「检查更新」时才联网。
+   *   （装仍然要用户点「一键升级」：Windows 上替换运行中的插件可能被文件占用挡住，不该自动做。）
+   */
+  autoUpdate: z.boolean().default(true).extra('volatile', true),
 })
 
 /**
@@ -162,6 +171,20 @@ export function apply(ctx, config) {
     if (myVer) return myVer
     try { myVer = String(JSON.parse(readFileSync(join(pluginDir, 'package.json'), 'utf8')).version || '') } catch { myVer = '' }
     return myVer
+  }
+  /**
+   * ⭐ 2026-11-06：版本比较抽出来给两处共用（「检查更新」接口 + 状态里的自动更新提示）。
+   *   规则：先比三段数字；数字相同时**正式版 > 预发布版**
+   *   （以前只比三段数字 ⇒ `0.2.0-rc.1` 会被当成 [0,2,0]，提示用户"升级到 rc 版" ✗）。
+   */
+  const vnum = (v) => String(v || '').trim().replace(/^v/i, '').split('-')[0].split('.').map((x) => parseInt(x, 10) || 0)
+  const isPre = (v) => /-/.test(String(v || '').trim())
+  const cmpVer = (a, b) => {
+    const x = vnum(a); const y = vnum(b)
+    for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0) }
+    const pa = isPre(a); const pb = isPre(b)
+    if (pa === pb) return 0
+    return pa ? -1 : 1            // 有预发布标签的更旧
   }
   const stateDir = stateDirOf(ctx)
   /**
@@ -279,6 +302,7 @@ function reportMeta() {
     dmMode: 'only', dmUid: 0,
     keywords: [], commentPerRound: 1, mentionName: '', pythonPath: 'python', dshBin: '', headlessProfile: 'headless', overlayMcp: true, workspace: '', reportLevel: 'full', replyToComments: false, replyPerRound: 1, favFolderId: 0,
     pondBase: '', pondFallback: '', pondKey: '', pondAutoShare: false, pondSocial: true, roundPlan: 'bili,pond',
+    autoUpdate: true,
   }
   const normalize = (src, base) => {
     const out = { ...base }
@@ -346,6 +370,7 @@ function reportMeta() {
     if ('pondKey' in p) p.pondKey = String(p.pondKey || '').trim().slice(0, 200)
     if ('pondAutoShare' in p) p.pondAutoShare = Boolean(p.pondAutoShare)
     if ('pondSocial' in p) p.pondSocial = Boolean(p.pondSocial)
+    if ('autoUpdate' in p) p.autoUpdate = Boolean(p.autoUpdate)
     return p
   }
 
@@ -1013,12 +1038,14 @@ function reportMeta() {
 
   tool({
     name: 'pond_share',
-    description: '将本地理解好的视频文字总结和字幕分享给鱼塘，不上传图片。画面理解请先在本地调用 bili_frames，写入 digest。\n'
-      + '后面的 agent 刷 feed 会直接读到 digest，不用再自己看一遍 —— 省的是他们的 token。\n'
+    description: '把一条视频**首触时能 get 到的全部信息**（不是概括）投进鱼塘，不上传图片 —— '
+      + '画面部分先在本地调 bili_frames，再把看到的东西写进 digest。\n'
+      + '后面的 agent 刷 feed 会直接读到 digest、不用再自己看一遍 —— 省的是他们的 token，'
+      + '所以**信息要全、要具体**：抽象判语（"围绕…展开""值得一看"）后面必须跟一个只有看过这条视频才写得出的细节。\n'
       + '第一次用会自动加入鱼塘（等价 pond_join）；也可以先调 pond_join 明确注册，再分享。',
     parameters: {
       bvid: { type: 'string', description: 'BV号' },
-      digest: { type: 'string', description: '你看完的判断（必填）：讲了什么 / 值不值得看 / 一句金句' },
+      digest: { type: 'string', description: '首触信息卡（必填，**不是一句概括**）：读到什么 / 内容按顺序的具体要点（含原话、时间点、数字）/ 画面看到了什么 / 弹幕热评 / 最后一行给档位判断 + 不确定处' },
       transcript: { type: 'string', description: '字幕或转写全文；不传就自动取一次 bili_subtitle' },
       note: { type: 'string', description: '投放时的一句话（可选）' },
       tags: { type: 'array', items: { type: 'string' }, description: '标签（可选，最多 5 个）' },
@@ -1033,7 +1060,25 @@ function reportMeta() {
       const bvid = String(args.bvid || '').trim()
       const digest = String(args.digest || '').trim()
       if (!bvid) return { ok: false, error: '缺少 bvid' }
-      if (!digest) return { ok: false, error: '缺少 digest —— 先说清「讲了什么 / 值不值得看」，再投' }
+      if (!digest) return { ok: false, error: '缺少 digest —— 先按「首触信息卡」把看到的东西写全（读到什么 / 内容 / 画面 / 判断），再投' }
+
+      // ⭐⭐ 2026-11-06：digest 退化成「概括」是池子里最贵的一种浪费 ——
+      //    下游拿到一句空话（「围绕 X 展开，适合 Y」），要么信了、要么只好自己重看一遍 ✗
+      //    ⇒ 太短的**先拦下来让它补一次**（还没 POST，补完再投不会 409 撞车）；
+      //    真没什么可说的小视频（几十秒纯画面 / 一句话新闻）有出口：第一行标【信息量少：原因】就放行 ✓
+      const DIGEST_MIN = 200
+      if (digest.length < DIGEST_MIN && !/【信息量少/.test(digest)) {
+        return {
+          ok: false,
+          blocked_by: 'digest_short',
+          chars: digest.length,
+          error: `digest 只有 ${digest.length} 字 —— 这形状像"概括"，不像"首触信息卡"（下游会因此自己重看一遍，这一段就白投了）`,
+          hint: '按 duty.md「鱼塘」那节的骨架补齐一次再投：读到的（字幕 N 段 / 画面 N 帧 / 热评 N 条）/ 是什么 / '
+            + '内容（按视频顺序，含原话、时间点、数字）/ 画面（图不会上传，必须单独写）/ 场外（弹幕、热评）/ '
+            + '我的判断放最后 / 不确定处。你刚读过字幕，补齐不用再看一遍 B站。'
+            + '这条**真的**没什么可说（几十秒纯画面、一句新闻）⇒ 第一行写 `【信息量少：<原因>】` 再投，直接放行。',
+        }
+      }
 
       // ① 字幕：没给就顺手取一次；取不到也照投（服务端会退回机器摘要）
       //    ⚠️ 这里必须 force：pond_share 要的是**原始字幕**，不能被鱼塘里的 brief 顶掉
@@ -3228,7 +3273,96 @@ function reportMeta() {
     return out
   }
 
-  let updateCache = null            // { at, latest } —— 检查更新的结果缓存
+  let updateCache = null            // { at, latest } —— npm 那条源的缓存（24 小时内不重复请求）
+
+  /**
+   * ⭐⭐ 2026-11-06（自动更新能力）：把「检查更新」抽成一个函数，三条路共用 ——
+   *   ① 设置页「检查更新」按钮（人工点）
+   *   ② 后台**每天自动查一次**（见下面 autoUpdateTick）
+   *   ③ `/status` 把**上次查到的结果**带出来（不发请求 ⇒ 界面不用点按钮也知道有没有新版）
+   * 语义很硬：**只查版本号，不装**。装必须用户点「一键升级」——
+   *   Windows 上替换正在运行的插件可能被文件占用挡住，自动装会把用户卡在半旧半新的状态里。
+   * 结果落盘到 <家>/update-check.json：重启 dsh 后仍知道上次查到什么，也保证**一天最多一次**请求。
+   */
+  const updateCheckFile = join(stateDir, 'update-check.json')
+  const readUpdateCheck = () => {
+    try {
+      const j = JSON.parse(readFileSync(updateCheckFile, 'utf8')) || {}
+      if (!Number(j.at) || !j.latest) return null
+      return { at: Number(j.at), latest: String(j.latest), source: String(j.source || 'npm'), current: String(j.current || '') }
+    } catch { return null }
+  }
+  const checkUpdate = async () => {
+    const out = { ok: true, current: myVersion(), latest: '', hasNew: false, source: 'npm', at: Date.now(), page: 'https://www.npmjs.com/package/' + PKG_NAME }
+    const fresh = (c) => Boolean(c) && Date.now() - c.at < 24 * 3600 * 1000
+    // ① npm（不依赖加速器，通常最快）
+    let npmVer = ''
+    try {
+      if (fresh(updateCache)) npmVer = updateCache.latest
+      else {
+        const r = await fetch('https://registry.npmjs.org/' + PKG_NAME + '/latest', { signal: AbortSignal.timeout(8000) })
+        const j = await r.json()
+        npmVer = String(j.version || '')
+        updateCache = { at: Date.now(), latest: npmVer }
+      }
+    } catch (e) { log('查 npm 版本没成功（接着查 GitHub）：' + (e?.message ?? e)) }
+    // ② GitHub（要加速器；不通就安静跳过）—— 独立 fork 没配 GH_REPO 就整段跳过
+    let ghVer = ''
+    if (GH_REPO) try {
+      if (fresh(ghUpdateCache)) ghVer = ghUpdateCache.latest
+      else {
+        const r = await fetch('https://api.github.com/repos/' + GH_REPO + '/contents/package.json', {
+          signal: AbortSignal.timeout(6000),
+          headers: { 'user-agent': PKG_NAME, accept: 'application/vnd.github+json' },
+        })
+        if (r.ok) {
+          const j = await r.json()
+          const txt = Buffer.from(String(j.content || ''), 'base64').toString('utf8')
+          ghVer = String(JSON.parse(txt).version || '')
+          ghUpdateCache = { at: Date.now(), latest: ghVer }
+        }
+      }
+    } catch { /* 没有加速器时这里基本都失败 —— 静默，别打扰 */ }
+    // 谁新用谁；一样新时优先 npm（装起来快）
+    if (ghVer && (!npmVer || cmpVer(ghVer, npmVer) > 0)) { out.latest = ghVer; out.source = 'github' }
+    else out.latest = npmVer || ghVer
+    if (out.source === 'github' && GH_REPO) out.page = 'https://github.com/' + GH_REPO
+    out.hasNew = Boolean(out.latest) && cmpVer(out.latest, out.current) > 0
+    lastUpdateSource = out.source
+    if (!out.latest) { out.ok = false; out.error = '两条源都没查到版本号（网络可能不通）' }
+    if (out.latest) {
+      try {
+        writeFileSync(updateCheckFile, JSON.stringify({ at: out.at, latest: out.latest, source: out.source, current: out.current }, null, 2), 'utf8')
+      } catch { /* 写不进去不影响这一次查询 */ }
+    }
+    return out
+  }
+  // 上次查到的版本号里带着来源 ⇒ 重启后点「一键升级」也知道该按 npm 还是 GitHub 装
+  try { const u0 = readUpdateCheck(); if (u0) lastUpdateSource = u0.source } catch { /* 无所谓 */ }
+
+  /**
+   * ⭐ 后台自动查一次（一天最多一次）。**只查、不装**；关掉 autoUpdate 就退回"只有点按钮才联网"。
+   * 🔴 定时器回调里的异常必须自己兜住 —— 2026-10-14 的事故就是回调抛错把宿主进程带走了。
+   */
+  const AUTO_UPDATE_MS = 24 * 3600 * 1000
+  const autoUpdateTick = async () => {
+    try {
+      refreshCfg()
+      if (cfg.autoUpdate === false) return
+      const last = readUpdateCheck()
+      if (last && Date.now() - last.at < AUTO_UPDATE_MS) return
+      const r = await checkUpdate()
+      if (r?.hasNew) log('自动检查更新：有新版 v' + r.latest + '（你的是 v' + r.current + '，来源 ' + r.source + '）—— 设置页里有「一键升级」')
+      else if (!r?.ok) log('自动检查更新没查到（网络可能不通）：' + (r?.error || ''))
+    } catch (e) { log('自动检查更新这一跳出错（已兜住）：' + (e?.stack ?? e)) }
+  }
+  try {
+    // 启动 90 秒后查一次（别跟启动时那些重活抢），之后每 6 小时看一眼"该不该查"（真正的阈值是 24 小时）
+    const t1 = setTimeout(() => { autoUpdateTick() }, 90_000)
+    const t2 = setInterval(() => { autoUpdateTick() }, 6 * 3600 * 1000)
+    t1.unref?.(); t2.unref?.()                    // 别因为它们让进程不肯退出
+    ctx.effect(() => () => { clearTimeout(t1); clearInterval(t2) }, 'bili-duty: 自动检查更新')
+  } catch (e) { log('自动检查更新的定时器没起来：' + (e?.message ?? e)) }
 
   const status = () => {
     refreshCfg()
@@ -3251,6 +3385,14 @@ function reportMeta() {
       pond: pondStatus(),
       venvReady: venvReadyNow(),
       version: myVersion(),
+      // ⭐ 2026-11-06（自动更新）：把**上次查到的结果**带出来 —— 这里**不发请求**，
+      //    所以设置页不用点按钮也能显示"有新版本"。hasNew 按当前版本重新算 ⇒ 升级完立刻不再提示。
+      update: (() => {
+        const auto = cfg.autoUpdate !== false
+        const u = readUpdateCheck()
+        if (!u) return { auto, hasNew: false, latest: '', checkedAt: null }
+        return { auto, hasNew: cmpVer(u.latest, myVersion()) > 0, latest: u.latest, source: u.source, checkedAt: u.at, current: myVersion() }
+      })(),
       // 2026-10-22：缺哪个 Python 包装不上，得能一眼看出来（出不了二维码 =09 缺 qrcode）
       missingDeps: (() => { try { return missingVenvDeps() } catch { return [] } })(),
       dmUidResolved: Number(cfg.dmUid) || dmUidCache || 0,
@@ -3505,60 +3647,11 @@ function reportMeta() {
     // 「一键升级」：点了它自己跑 add（⚠️ 之后要重启才生效）
     if (req.method === 'POST' && path === '/api/bili-duty/upgrade') return sendJson(res, 200, runUpgrade())
 
-    // 「检查更新」：⚠️ 只在用户点按钮时才联网（不偷偷发请求 ✓），结果缓存一天 ✓
-    // ⭐ 2026-10-19（主人："现在自动更新能让扫 github 吗"）：**两条源都问** ——
-    //    npm 上可能还没发上去（账号被暂停时会停在旧版），那时候 GitHub 才是最新 ✓
-    //    ⇒ 谁给的版本号更新就用谁，并记住来源：一键升级按来源选 `add dsh-pond` / `add github:…` ✓
+    // 「检查更新」：2026-11-06 起**会自己每天查一次**（autoUpdate，默认开）；
+    //   这个按钮是"立刻查一遍"，跟自动那次走同一个函数（见上面 checkUpdate）。
+    //   ⚠️ 无论哪条路，都**只查版本号、不装** —— 装必须用户点「一键升级」。
     if (req.method === 'GET' && path === '/api/bili-duty/update') {
-      const out = { ok: true, current: myVersion(), latest: '', hasNew: false, source: 'npm', page: 'https://www.npmjs.com/package/' + PKG_NAME }
-      // ⭐ 要比谁更新，不能只比不相等 —— 否则本地版本高于 npm 时会误报有新版
-      // ⭐ 2026-10-20：预发布标签要单独看 —— 以前只比三段数字 ⇒ `0.2.0-rc.1` 被当成 [0,2,0]，
-      //    跟正式版打平、却比 0.1.18 更大 ⇒ 用户会被提示"升级到 rc 版" ✗；现在数字段相同时**正式版 > 预发布版**
-      const vnum = (v) => String(v || '').trim().replace(/^v/i, '').split('-')[0].split('.').map((x) => parseInt(x, 10) || 0)
-      const isPre = (v) => /-/.test(String(v || '').trim())
-      const cmp = (a, b) => {
-        const x = vnum(a), y = vnum(b)
-        for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0) }
-        const pa = isPre(a), pb = isPre(b)
-        if (pa === pb) return 0
-        return pa ? -1 : 1   // 有预发布标签的更旧
-      }
-      const fresh = (c) => Boolean(c) && Date.now() - c.at < 24 * 3600 * 1000
-      // ① npm（不依赖加速器，通常最快）
-      let npmVer = ''
-      try {
-        if (fresh(updateCache)) npmVer = updateCache.latest
-        else {
-          const r = await fetch('https://registry.npmjs.org/' + PKG_NAME + '/latest', { signal: AbortSignal.timeout(8000) })
-          const j = await r.json()
-          npmVer = String(j.version || '')
-          updateCache = { at: Date.now(), latest: npmVer }
-        }
-      } catch (e) { log('查 npm 版本没成功（接着查 GitHub）：' + (e?.message ?? e)) }
-      // ② GitHub（要加速器；不通就安静跳过，别打扰用户）—— 独立 fork 没配 GH_REPO 就整段跳过
-      let ghVer = ''
-      if (GH_REPO) try {
-        if (fresh(ghUpdateCache)) ghVer = ghUpdateCache.latest
-        else {
-          const r = await fetch('https://api.github.com/repos/' + GH_REPO + '/contents/package.json', {
-            signal: AbortSignal.timeout(6000),
-            headers: { 'user-agent': PKG_NAME, accept: 'application/vnd.github+json' },
-          })
-          if (r.ok) {
-            const j = await r.json()
-            const txt = Buffer.from(String(j.content || ''), 'base64').toString('utf8')
-            ghVer = String(JSON.parse(txt).version || '')
-            ghUpdateCache = { at: Date.now(), latest: ghVer }
-          }
-        }
-      } catch { /* 没有加速器时这里基本都失败 —— 静默，别打扰 */ }
-      // 谁新用谁；一样新时优先 npm（装起来快）
-      if (ghVer && (!npmVer || cmp(ghVer, npmVer) > 0)) { out.latest = ghVer; out.source = 'github' }
-      else out.latest = npmVer || ghVer
-      if (out.source === 'github' && GH_REPO) out.page = 'https://github.com/' + GH_REPO
-      out.hasNew = Boolean(out.latest) && cmp(out.latest, out.current) > 0
-      lastUpdateSource = out.source
-      if (!out.latest) { out.ok = false; out.error = '两条源都没查到版本号（网络可能不通）' }
+      const out = await checkUpdate()
       return sendJson(res, 200, out)
     }
 

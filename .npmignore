@@ -1,0 +1,11 @@
+# 空文件 = "什么都别忽略"，于是 vendor 里的 __pycache__/*.pyc 被打进了包里（115 kB 的 .pyc）。
+# 注意：**.npmignore 一旦存在，npm 就不再读 .gitignore**，所以这里要把该排除的显式写一遍。
+__pycache__/
+*.pyc
+*.bak*
+*.log
+test/
+tools/
+scripts/
+.npm-cache/
+.commit-msg.txt

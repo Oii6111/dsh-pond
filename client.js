@@ -295,6 +295,12 @@ function WatchTab() {
         if (cfg && pondFallbackDraft === null) setPondFallbackDraft(cfg.pondFallback || '')
       }, [cfg])
 
+      // ⭐ 2026-11-06（自动更新）：宿主每天自己查一次，结果跟着 /status 回来 ⇒
+      //    **不用点「检查更新」**也能看到「一键升级」按钮（只是查，装还是要用户点）。
+      React.useEffect(() => {
+        if (st?.update?.hasNew && st.update.latest) setNewVer(String(st.update.latest))
+      }, [st?.update?.latest, st?.update?.hasNew])
+
       // ⭐ 收藏夹列表：只读一次，读不到就空列表（别每 5 秒重拉）
       React.useEffect(() => {
         if (favFolders !== null) return
@@ -839,6 +845,16 @@ function WatchTab() {
             h('div', { 'data-bd-note': '' },
               !st.venvReady ? (st.installFailed ? '上次没装成 → 看下面日志' : '还没装 → 先点「装主依赖」')
                 : (st.loggedIn ? '装好了 → 下一步「扫码登录」' : '环境好了 → 点「扫码登录」'))),
+          // ⭐ 2026-11-06（自动更新）：默认每天自己查一次，查到了这里就直接冒出「一键升级」按钮
+          h(ToggleRow, {
+            label: '自动检查更新',
+            note: '每天查一次有没有新版本（**只提示，不会自己装**）'
+              + (st?.update?.checkedAt ? '；上次查：' + (() => { try { return new Date(st.update.checkedAt).toLocaleString() } catch { return '刚查过' } })() : '；装完重启 dsh 才会真正生效'),
+            on: st?.config?.autoUpdate !== false,
+            onChange: (v) => patch({ autoUpdate: v }, '自动检查更新'),
+          }),
+          (st?.update && st.update.hasNew && !newVer) ? h('div', { 'data-bd-note': '' },
+            '发现新版 v' + st.update.latest + '（来源 ' + (st.update.source === 'github' ? 'GitHub' : 'npm') + '）') : null,
           loginState ? h('div', { 'data-bd-msg': '', 'data-good': loginTone === 'good' ? '' : undefined, 'data-warn': loginTone === 'warn' ? '' : undefined }, loginState) : null,
           st.installTail ? h('div', null,
             h('div', { 'data-bd-note': '' }, st.installing ? '正在装主依赖（进度）：' : '主依赖的日志（B站 搜索 / 字幕 / 评论 用得到，末尾）：'),

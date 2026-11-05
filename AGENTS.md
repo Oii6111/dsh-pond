@@ -11,8 +11,8 @@
    · ⚠️ 若用户机器上的**杀软拦了这次下载**：让他把 `%USERPROFILE%\.dsh\bili-duty\bin\` 加白，或干脆自己装 uv / Python 3.10+ ✓
    · ⭐ **万一下载链路都不通**（有用户反馈"桌面版上这条链路经常不通"）：**手动放一份 `uv.exe` 到 `<家目录>\bin\` 就行**
      —— 插件会**用那一份、跳过下载** ✓（他 `PATH` 里本来就有 `uv` 的话，直接用那个 ✓）
-2. `dsh plugin --profile web add link:<本仓库路径>`（本地开发 —— **这台机器现在就是这么装的**）
-   · npm 发布之后：`dsh plugin --profile web add dsh-pond`
+2. `dsh plugin --profile web add dsh-pond`（**npm 上已发布**，桌面版把 `web` 换成 `desktop`）
+   · 本地开发改代码才用：`dsh plugin --profile web add link:<本仓库路径>`
    · ⚠️ **别装成 `dsh-bili-scroll`**：那是**上游**项目，跟这一份不是同一套代码；装了会把本地这份顶掉。
    · ⚠️ **升级旧版**：如果用户在设置页看到的按钮叫「**重装依赖**」（不是「**重装主依赖**」），
      说明装的还是 **0.1.0** —— 那一版建 Python 环境时缺一个参数，**依赖装不上、二维码也画不出来**。
@@ -74,3 +74,7 @@
 
 - 配置与运行数据都在用户的 `$DSH_HOME/bili-duty/`，**不写进插件包目录**
 - 谷时窗口按 DeepSeek 官方口径：工作日 9–12 / 14–18 是高峰，其余（含周末）都是谷时
+- **更新链路**（2.4.0 起）：npm 包 `dsh-pond` 为主源，GitHub `Oii6111/dsh-pond`（`GH_REPO`）为备份源；
+  后台**每天查一次**版本号（`autoUpdate`，只查不装，结果落 `<家>/update-check.json`）；
+  「一键升级」= 宿主跑 `dsh plugin --profile <p> add <spec>`，**装完必须重启 dsh**。
+  ⇒ 发版就是：bump `package.json` + 改 CHANGELOG → `npm publish` → 顺带打个 `v<版本>` tag 和 Release（给 GH 源与 tgz 直链用）
