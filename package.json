@@ -12,6 +12,7 @@
     "pond"
   ],
   "license": "MIT",
+  "icon": "assets/icon.png",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -21,6 +22,7 @@
   },
   "files": [
     "profile-template",
+    "assets",
     "index.js",
     "client.js",
     "cordis.patch.yml",
