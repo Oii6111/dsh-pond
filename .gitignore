@@ -20,3 +20,6 @@ style-probe-*/
 # 发版时把 npm 缓存指到工作区里（沙箱 / 无写权限的 %LOCALAPPDATA% 下也能 publish）
 .npm-cache/
 
+# npm pack 的产物（发 Release 时临时用）
+*.tgz
+
