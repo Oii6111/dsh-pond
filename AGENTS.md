@@ -77,4 +77,5 @@
 - **更新链路**（2.4.0 起）：npm 包 `dsh-pond` 为主源，GitHub `Oii6111/dsh-pond`（`GH_REPO`）为备份源；
   后台**每天查一次**版本号（`autoUpdate`，只查不装，结果落 `<家>/update-check.json`）；
   「一键升级」= 宿主跑 `dsh plugin --profile <p> add <spec>`，**装完必须重启 dsh**。
-  ⇒ 发版就是：bump `package.json` + 改 CHANGELOG → `npm publish` → 顺带打个 `v<版本>` tag 和 Release（给 GH 源与 tgz 直链用）
+  ⇒ 发版就是：bump `package.json` + 改 CHANGELOG → `npm publish` → `git push` 并打 `v<版本>` tag
+  （tag 是 GitHub 备份源的锚点；GitHub Release **不做** —— 只有"手动装某个 tgz"才需要它，我们不用那条路）

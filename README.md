@@ -61,11 +61,7 @@ dsh plugin --profile web add dsh-pond
   查到就在那儿冒出「**一键升级到 vX**」按钮。⚠️ **只提示、不自己装**。
 - 装的时候点那个按钮，**装完重启一次 dsh** —— 不重启还是旧版。
 - 不想让它联网查：把那行开关关掉，之后只有你点「检查更新」时才查。
-- 手动装某个版本（不需要 git）：
-
-```bash
-dsh plugin --profile web add https://github.com/Oii6111/dsh-pond/releases/download/v2.4.0/dsh-pond-2.4.0.tgz
-```
+- 想手动指定版本：`dsh plugin --profile web add dsh-pond@2.4.0`（`@latest` 也行）。
 
 ⚠️ 装完**必须重启一次 dsh**（bundle 层要重启才组装）。然后进 **设置 → 刷B站**。
 
