@@ -23,3 +23,6 @@ style-probe-*/
 # npm pack 的产物（发 Release 时临时用）
 *.tgz
 
+# 临时落盘的视频字幕（自己的东西，不进仓库）
+subs/
+
